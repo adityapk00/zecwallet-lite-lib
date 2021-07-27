@@ -22,7 +22,7 @@ use crate::{grpc_connector::GrpcConnector, lightclient::checkpoints};
 pub const DEFAULT_SERVER: &str = "https://lwdv3.zecwallet.co";
 pub const WALLET_NAME: &str = "zecwallet-light-wallet.dat";
 pub const LOGFILE_NAME: &str = "zecwallet-light-wallet.debug.log";
-pub const ANCHOR_OFFSET: u32 = 4;
+pub const ANCHOR_OFFSET: [u32; 5] = [9, 4, 2, 1, 0];
 pub const MAX_REORG: usize = 100;
 pub const GAP_RULE_UNUSED_ADDRESSES: usize = if cfg!(any(target_os = "ios", target_os = "android")) {
     0
@@ -35,20 +35,21 @@ pub struct LightClientConfig {
     pub server: http::Uri,
     pub chain_name: String,
     pub sapling_activation_height: u64,
-    pub anchor_offset: u32,
+    pub anchor_offset: [u32; 5],
     pub monitor_mempool: bool,
     pub data_dir: Option<String>,
 }
 
 impl LightClientConfig {
     // Create an unconnected (to any server) config to test for local wallet etc...
+    #[cfg(test)]
     pub fn create_unconnected(chain_name: String, dir: Option<String>) -> LightClientConfig {
         LightClientConfig {
             server: http::Uri::default(),
             chain_name: chain_name,
             sapling_activation_height: 1,
             monitor_mempool: false,
-            anchor_offset: ANCHOR_OFFSET,
+            anchor_offset: [4u32; 5],
             data_dir: dir,
         }
     }

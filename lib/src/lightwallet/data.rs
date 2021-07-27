@@ -22,7 +22,7 @@ use zcash_primitives::{
 pub struct BlockData {
     pub(crate) ecb: Vec<u8>,
     pub height: u64,
-    pub tree: Option<CommitmentTree<Node>>,
+    tree: Option<CommitmentTree<Node>>,
 }
 
 impl BlockData {
@@ -59,6 +59,14 @@ impl BlockData {
             height,
             tree: None,
         }
+    }
+
+    pub(crate) fn tree(&self) -> Option<CommitmentTree<Node>> {
+        self.tree.clone()
+    }
+
+    pub(crate) fn set_tree(&mut self, tree: CommitmentTree<Node>) {
+        self.tree = Some(tree);
     }
 
     pub(crate) fn cb(&self) -> CompactBlock {
@@ -149,6 +157,11 @@ impl WitnessCache {
 
     pub fn get(&self, i: usize) -> Option<&IncrementalWitness<Node>> {
         self.witnesses.get(i)
+    }
+
+    #[cfg(test)]
+    pub fn get_from_last(&self, i: usize) -> Option<&IncrementalWitness<Node>> {
+        self.witnesses.get(self.len() - i - 1)
     }
 
     pub fn last(&self) -> Option<&IncrementalWitness<Node>> {

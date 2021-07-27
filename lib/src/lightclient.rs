@@ -1,8 +1,8 @@
 use crate::{
     blaze::{
-        fetch_compact_blocks::FetchCompactBlocks, fetch_full_tx::FetchFullTxns, fetch_taddr_txns::FetchTaddrTxns,
-        sync_status::SyncStatus, syncdata::BlazeSyncData, trial_decryptions::TrialDecryptions,
-        update_notes::UpdateNotes,
+        block_witness_data::BlockAndWitnessData, fetch_compact_blocks::FetchCompactBlocks,
+        fetch_full_tx::FetchFullTxns, fetch_taddr_txns::FetchTaddrTxns, sync_status::SyncStatus,
+        syncdata::BlazeSyncData, trial_decryptions::TrialDecryptions, update_notes::UpdateNotes,
     },
     compact_formats::RawTransaction,
     grpc_connector::GrpcConnector,
@@ -30,6 +30,7 @@ use tokio::{
 };
 use zcash_client_backend::encoding::{decode_payment_address, encode_payment_address};
 use zcash_primitives::{
+    block::BlockHash,
     consensus::{BlockHeight, BranchId, MAIN_NETWORK},
     memo::{Memo, MemoBytes},
     merkle_tree::CommitmentTree,
@@ -1367,22 +1368,40 @@ impl LightClient {
         let last_scanned_height = self.wallet.last_scanned_height().await;
 
         let uri = self.config.server.clone();
-        let latest_block = GrpcConnector::get_latest_block(uri.clone()).await?.height;
-        if latest_block < last_scanned_height {
+        let latest_blockid = GrpcConnector::get_latest_block(uri.clone()).await?;
+        if latest_blockid.height < last_scanned_height {
             let w = format!(
                 "Server's latest block({}) is behind ours({})",
-                latest_block, last_scanned_height
+                latest_blockid.height, last_scanned_height
             );
             warn!("{}", w);
             return Err(w);
         }
 
+        if latest_blockid.height == last_scanned_height {
+            if !latest_blockid.hash.is_empty()
+                && BlockHash::from_slice(&latest_blockid.hash).to_string() != self.wallet.last_scanned_hash().await
+            {
+                warn!("One block reorg at height {}", last_scanned_height);
+                // This is a one-block reorg, so pop the last block. Even if there are more blocks to reorg, this is enough
+                // to trigger a sync, which will then reorg the remaining blocks
+                BlockAndWitnessData::invalidate_block(
+                    last_scanned_height,
+                    self.wallet.blocks.clone(),
+                    self.wallet.txns.clone(),
+                )
+                .await;
+            }
+        }
+
+        // Re-read the last scanned height
+        let last_scanned_height = self.wallet.last_scanned_height().await;
         let batch_size = 500_000;
 
         let mut latest_block_batches = vec![];
         let mut prev = last_scanned_height;
-        while latest_block_batches.is_empty() || prev != latest_block {
-            let batch = cmp::min(latest_block, prev + batch_size);
+        while latest_block_batches.is_empty() || prev != latest_blockid.height {
+            let batch = cmp::min(latest_blockid.height, prev + batch_size);
             prev = batch;
             latest_block_batches.push(batch);
         }
@@ -1445,8 +1464,7 @@ impl LightClient {
         let price = self.wallet.price.read().await.clone();
 
         // Sapling Tree GRPC Fetcher
-        let grpc_connector = GrpcConnector::new(uri);
-        let (saplingtree_fetcher_handle, saplingtree_fetcher_tx) = grpc_connector.start_saplingtree_fetcher().await;
+        let grpc_connector = GrpcConnector::new(uri.clone());
 
         // A signal to detect reorgs, and if so, ask the block_fetcher to fetch new blocks.
         let (reorg_tx, reorg_rx) = unbounded_channel();
@@ -1456,13 +1474,7 @@ impl LightClient {
             .read()
             .await
             .block_data
-            .start(
-                start_block,
-                end_block,
-                self.wallet.txns(),
-                saplingtree_fetcher_tx,
-                reorg_tx,
-            )
+            .start(start_block, end_block, self.wallet.txns(), reorg_tx)
             .await;
 
         // Full Tx GRPC fetcher
@@ -1487,7 +1499,7 @@ impl LightClient {
         // Do Trial decryptions of all the sapling outputs, and pass on the successful ones to the update_notes processor
         let trial_decryptions_processor = TrialDecryptions::new(self.wallet.keys(), self.wallet.txns(), price.clone());
         let (trial_decrypts_handle, trial_decrypts_tx) = trial_decryptions_processor
-            .start(bsync_data.clone(), detected_txns_tx)
+            .start(uri.clone(), bsync_data.clone(), detected_txns_tx)
             .await;
 
         // Fetch Compact blocks and send them to nullifier cache, node-and-witness cache and the trial-decryption processor
@@ -1519,16 +1531,11 @@ impl LightClient {
 
         // Await all the futures
         let r1 = tokio::spawn(async move {
-            join_all(vec![
-                trial_decrypts_handle,
-                saplingtree_fetcher_handle,
-                fulltx_fetcher_handle,
-                taddr_fetcher_handle,
-            ])
-            .await
-            .into_iter()
-            .map(|r| r.map_err(|e| format!("{}", e)))
-            .collect::<Result<(), _>>()
+            join_all(vec![trial_decrypts_handle, fulltx_fetcher_handle, taddr_fetcher_handle])
+                .await
+                .into_iter()
+                .map(|r| r.map_err(|e| format!("{}", e)))
+                .collect::<Result<(), _>>()
         });
 
         join_all(vec![

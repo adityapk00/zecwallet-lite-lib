@@ -316,7 +316,7 @@ impl FetchFullTxns {
                         None => continue,
                     };
 
-                info!("A sapling note was received into the wallet in {}", tx.txid());
+                // info!("A sapling note was received into the wallet in {}", tx.txid());
                 if unconfirmed {
                     wallet_txns.write().await.add_pending_note(
                         tx.txid(),

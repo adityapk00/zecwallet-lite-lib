@@ -7,6 +7,7 @@ use crate::{
     },
 };
 use futures::future;
+use http::Uri;
 use log::info;
 use std::sync::Arc;
 use tokio::{
@@ -43,6 +44,7 @@ impl TrialDecryptions {
 
     pub async fn start(
         &self,
+        uri: Uri,
         bsync_data: Arc<RwLock<BlazeSyncData>>,
         detected_txid_sender: UnboundedSender<(TxId, Nullifier, BlockHeight, Option<u32>)>,
     ) -> (JoinHandle<()>, UnboundedSender<CompactBlock>) {
@@ -76,14 +78,15 @@ impl TrialDecryptions {
                 let wallet_txns = wallet_txns.clone();
                 let bsync_data = bsync_data.clone();
                 let price = price.clone();
+                let uri = uri.clone();
 
                 let detected_txid_sender = detected_txid_sender.clone();
 
                 tasks.push(tokio::spawn(async move {
                     for (tx_num, ctx) in cb.vtx.iter().enumerate() {
                         for (output_num, co) in ctx.outputs.iter().enumerate() {
-                            let cmu = co.cmu().ok()?;
-                            let epk = co.epk().ok()?;
+                            let cmu = co.cmu().map_err(|_| "No CMU".to_string())?;
+                            let epk = co.epk().map_err(|_| "No EPK".to_string())?;
 
                             for (i, ivk) in ivks.iter().enumerate() {
                                 let enc_ciphertext = co.ciphertext.clone();
@@ -104,8 +107,8 @@ impl TrialDecryptions {
                                         .read()
                                         .await
                                         .block_data
-                                        .get_note_witness(height, tx_num, output_num)
-                                        .await;
+                                        .get_note_witness(uri.clone(), height, tx_num, output_num)
+                                        .await?;
 
                                     let txid = WalletTx::new_txid(&ctx.hash);
                                     let nullifier = note.nf(&extfvk.fvk.vk, witness.position() as u64);
@@ -137,7 +140,7 @@ impl TrialDecryptions {
                     }
 
                     // Return a nothing-value
-                    Some(())
+                    Ok::<(), String>(())
                 }));
 
                 // Every 10_000 blocks, send them off to execute

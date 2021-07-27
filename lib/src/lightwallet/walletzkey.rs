@@ -319,7 +319,7 @@ pub mod tests {
             chain_name: "main".to_string(),
             monitor_mempool: false,
             sapling_activation_height: 0,
-            anchor_offset: 0,
+            anchor_offset: [0u32; 5],
             data_dir: None,
         }
     }

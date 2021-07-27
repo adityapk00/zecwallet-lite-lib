@@ -1,5 +1,6 @@
-use crate::blaze::test_utils::tree_to_string;
+use crate::blaze::test_utils::{tree_to_string, FakeCompactBlockList};
 use crate::compact_formats::compact_tx_streamer_server::CompactTxStreamer;
+use crate::compact_formats::compact_tx_streamer_server::CompactTxStreamerServer;
 use crate::compact_formats::{
     Address, AddressList, Balance, BlockId, BlockRange, ChainSpec, CompactBlock, CompactTx, Duration, Empty, Exclude,
     GetAddressUtxosArg, GetAddressUtxosReply, GetAddressUtxosReplyList, LightdInfo, PingResponse, PriceRequest,
@@ -7,16 +8,19 @@ use crate::compact_formats::{
 };
 use crate::lightwallet::data::WalletTx;
 use crate::lightwallet::now;
-use futures::Stream;
+use futures::{FutureExt, Stream};
 use rand::rngs::OsRng;
 use rand::Rng;
 use std::cmp;
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
-use tokio::sync::{mpsc, RwLock};
+use tempdir::TempDir;
+use tokio::sync::{mpsc, oneshot, RwLock};
+use tokio::task::JoinHandle;
 use tokio::time::sleep;
 use tokio_stream::wrappers::ReceiverStream;
+use tonic::transport::Server;
 use tonic::{Request, Response, Status};
 use zcash_primitives::block::BlockHash;
 use zcash_primitives::merkle_tree::CommitmentTree;
@@ -24,6 +28,107 @@ use zcash_primitives::sapling::Node;
 use zcash_primitives::transaction::{Transaction, TxId};
 
 use super::lightclient_config::LightClientConfig;
+use super::LightClient;
+
+pub async fn create_test_server() -> (
+    Arc<RwLock<TestServerData>>,
+    LightClientConfig,
+    oneshot::Receiver<bool>,
+    oneshot::Sender<bool>,
+    JoinHandle<()>,
+) {
+    let (ready_tx, ready_rx) = oneshot::channel();
+    let (stop_tx, stop_rx) = oneshot::channel();
+
+    let port = portpicker::pick_unused_port().unwrap();
+    let server_port = format!("127.0.0.1:{}", port);
+    let uri = format!("http://{}", server_port);
+    let addr = server_port.parse().unwrap();
+
+    let mut config = LightClientConfig::create_unconnected("main".to_string(), None);
+    config.server = uri.parse().unwrap();
+
+    let (service, data) = TestGRPCService::new(config.clone());
+
+    let (data_dir_tx, data_dir_rx) = oneshot::channel();
+
+    let h1 = tokio::spawn(async move {
+        let svc = CompactTxStreamerServer::new(service);
+
+        // We create the temp dir here, so that we can clean it up after the test runs
+        let temp_dir = TempDir::new(&format!("test{}", port).as_str()).unwrap();
+
+        // Send the path name. Do into_path() to preserve the temp directory
+        data_dir_tx
+            .send(
+                temp_dir
+                    .into_path()
+                    .canonicalize()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .to_string(),
+            )
+            .unwrap();
+
+        ready_tx.send(true).unwrap();
+        Server::builder()
+            .add_service(svc)
+            .serve_with_shutdown(addr, stop_rx.map(drop))
+            .await
+            .unwrap();
+
+        println!("Server stopped");
+    });
+
+    let data_dir = data_dir_rx.await.unwrap();
+    println!("GRPC Server listening on: {}. With datadir {}", addr, data_dir);
+    config.data_dir = Some(data_dir);
+
+    (data, config, ready_rx, stop_tx, h1)
+}
+
+pub async fn mine_random_blocks(
+    fcbl: &mut FakeCompactBlockList,
+    data: &Arc<RwLock<TestServerData>>,
+    lc: &LightClient,
+    num: u64,
+) {
+    let cbs = fcbl.add_blocks(num).into_compact_blocks();
+
+    data.write().await.add_blocks(cbs.clone());
+    lc.do_sync(true).await.unwrap();
+}
+
+pub async fn mine_pending_blocks(
+    fcbl: &mut FakeCompactBlockList,
+    data: &Arc<RwLock<TestServerData>>,
+    lc: &LightClient,
+) {
+    let cbs = fcbl.into_compact_blocks();
+
+    data.write().await.add_blocks(cbs.clone());
+    let mut v = fcbl.into_txns();
+
+    // Add all the t-addr spend's t-addresses into the maps, so the test grpc server
+    // knows to serve this tx when the txns for this particular taddr are requested.
+    for (t, _h, taddrs) in v.iter_mut() {
+        for vin in &t.vin {
+            let prev_txid = WalletTx::new_txid(&vin.prevout.hash().to_vec());
+            if let Some(wtx) = lc.wallet.txns.read().await.current.get(&prev_txid) {
+                if let Some(utxo) = wtx.utxos.iter().find(|u| u.output_index as u32 == vin.prevout.n()) {
+                    if !taddrs.contains(&utxo.address) {
+                        taddrs.push(utxo.address.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    data.write().await.add_txns(v);
+
+    lc.do_sync(true).await.unwrap();
+}
 
 #[derive(Debug)]
 pub struct TestServerData {
