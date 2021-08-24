@@ -1,7 +1,8 @@
 use crate::lightwallet::{data::WalletTx, wallet_txns::WalletTxns};
 use std::sync::Arc;
 
-use futures::future::join_all;
+use futures::stream::FuturesUnordered;
+use futures::StreamExt;
 use tokio::join;
 use tokio::sync::oneshot;
 use tokio::sync::{mpsc::unbounded_channel, RwLock};
@@ -115,66 +116,73 @@ impl UpdateNotes {
 
         let wallet_txns = self.wallet_txns.clone();
         let h1 = tokio::spawn(async move {
-            let mut workers = vec![];
+            let mut workers = FuturesUnordered::new();
 
             // Recieve Txns that are sent to the wallet. We need to update the notes for this.
             while let Some((txid, nf, at_height, output_num)) = rx.recv().await {
-                // If this nullifier was spent at a future height, fetch the TxId at the height and process it
-                if let Some(spent_height) = bsync_data
-                    .read()
-                    .await
-                    .block_data
-                    .is_nf_spent(nf, at_height.into())
-                    .await
-                {
-                    //info!("Note was spent, just add it as spent for TxId {}", txid);
-                    let (ctx, ts) = bsync_data
+                let bsync_data = bsync_data.clone();
+                let wallet_txns = wallet_txns.clone();
+                let fetch_full_sender = fetch_full_sender.clone();
+
+                workers.push(tokio::spawn(async move {
+                    // If this nullifier was spent at a future height, fetch the TxId at the height and process it
+                    if let Some(spent_height) = bsync_data
                         .read()
                         .await
                         .block_data
-                        .get_ctx_for_nf_at_height(&nf, spent_height)
-                        .await;
-
-                    let spent_txid = WalletTx::new_txid(&ctx.hash);
-                    let spent_at_height = BlockHeight::from_u32(spent_height as u32);
-
-                    // Mark this note as being spent
-                    let value = wallet_txns
-                        .write()
+                        .is_nf_spent(nf, at_height.into())
                         .await
-                        .mark_txid_nf_spent(txid, &nf, &spent_txid, spent_at_height);
+                    {
+                        //info!("Note was spent, just add it as spent for TxId {}", txid);
+                        let (ctx, ts) = bsync_data
+                            .read()
+                            .await
+                            .block_data
+                            .get_ctx_for_nf_at_height(&nf, spent_height)
+                            .await;
 
-                    // Record the future tx, the one that has spent the nullifiers recieved in this Tx in the wallet
-                    wallet_txns
-                        .write()
-                        .await
-                        .add_new_spent(spent_txid, spent_at_height, false, ts, nf, value, txid);
+                        let spent_txid = WalletTx::new_txid(&ctx.hash);
+                        let spent_at_height = BlockHeight::from_u32(spent_height as u32);
 
-                    // Send the future Tx to be fetched too, in case it has only spent nullifiers and not recieved any change
-                    fetch_full_sender.send((spent_txid, spent_at_height)).unwrap();
-                } else {
-                    //info!("Note was NOT spent, update its witnesses for TxId {}", txid);
+                        // Mark this note as being spent
+                        let value =
+                            wallet_txns
+                                .write()
+                                .await
+                                .mark_txid_nf_spent(txid, &nf, &spent_txid, spent_at_height);
 
-                    // If this note's nullifier was not spent, then we need to update the witnesses for this.
-                    workers.push(tokio::spawn(Self::update_witnesses(
-                        bsync_data.clone(),
-                        wallet_txns.clone(),
-                        txid,
-                        nf,
-                        output_num,
-                    )));
-                }
+                        // Record the future tx, the one that has spent the nullifiers recieved in this Tx in the wallet
+                        wallet_txns.write().await.add_new_spent(
+                            spent_txid,
+                            spent_at_height,
+                            false,
+                            ts,
+                            nf,
+                            value,
+                            txid,
+                        );
 
-                // Send it off to get the full transaction if this is a new Tx, that is, it has an output_num
-                if output_num.is_some() {
-                    fetch_full_sender.send((txid, at_height)).unwrap();
-                }
+                        // Send the future Tx to be fetched too, in case it has only spent nullifiers and not recieved any change
+                        fetch_full_sender.send((spent_txid, spent_at_height)).unwrap();
+                    } else {
+                        //info!("Note was NOT spent, update its witnesses for TxId {}", txid);
+
+                        // If this note's nullifier was not spent, then we need to update the witnesses for this.
+                        Self::update_witnesses(bsync_data.clone(), wallet_txns.clone(), txid, nf, output_num).await;
+                    }
+
+                    // Send it off to get the full transaction if this is a new Tx, that is, it has an output_num
+                    if output_num.is_some() {
+                        fetch_full_sender.send((txid, at_height)).unwrap();
+                    }
+                }));
             }
 
-            drop(fetch_full_sender);
-
             // Wait for all the workers
-            join_all(workers).await;
+            while let Some(r) = workers.next().await {
+                r.unwrap();
+            }
+
             //info!("Finished Note Update processing");
         });
 

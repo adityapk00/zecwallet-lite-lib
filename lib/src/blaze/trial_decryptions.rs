@@ -2,7 +2,7 @@ use crate::{
     compact_formats::CompactBlock,
     lightwallet::{data::WalletTx, keys::Keys, wallet_txns::WalletTxns},
 };
-use futures::future;
+use futures::{stream::FuturesUnordered, StreamExt};
 use log::info;
 use std::sync::Arc;
 use tokio::{
@@ -46,7 +46,7 @@ impl TrialDecryptions {
         let wallet_txns = self.wallet_txns.clone();
 
         let h = tokio::spawn(async move {
-            let mut workers = vec![];
+            let mut workers = FuturesUnordered::new();
             let mut cbs = vec![];
 
             let ivks = Arc::new(
@@ -88,7 +88,7 @@ impl TrialDecryptions {
                 detected_txid_sender,
             )));
 
-            for r in future::join_all(workers).await {
+            while let Some(r) = workers.next().await {
                 r.unwrap().unwrap();
             }
 
@@ -108,6 +108,7 @@ impl TrialDecryptions {
     ) -> Result<(), String> {
         let config = keys.read().await.config().clone();
         let blk_count = cbs.len();
+        let mut workers = FuturesUnordered::new();
 
         for cb in cbs {
             let height = BlockHeight::from_u32(cb.height as u32);
@@ -129,39 +130,50 @@ impl TrialDecryptions {
                             &cmu,
                             &co.ciphertext,
                         ) {
-                            let keys = keys.read().await;
-                            let extfvk = keys.zkeys[i].extfvk();
-                            let have_spending_key = keys.have_spending_key(extfvk);
-                            let uri = bsync_data.read().await.uri().clone();
+                            let keys = keys.clone();
+                            let bsync_data = bsync_data.clone();
+                            let wallet_txns = wallet_txns.clone();
+                            let detected_txid_sender = detected_txid_sender.clone();
+                            let timestamp = cb.time as u64;
+                            let ctx = ctx.clone();
 
-                            // Get the witness for the note
-                            let witness = bsync_data
-                                .read()
-                                .await
-                                .block_data
-                                .get_note_witness(uri, height, tx_num, output_num)
-                                .await?;
+                            workers.push(tokio::spawn(async move {
+                                let keys = keys.read().await;
+                                let extfvk = keys.zkeys[i].extfvk();
+                                let have_spending_key = keys.have_spending_key(extfvk);
+                                let uri = bsync_data.read().await.uri().clone();
 
-                            let txid = WalletTx::new_txid(&ctx.hash);
-                            let nullifier = note.nf(&extfvk.fvk.vk, witness.position() as u64);
+                                // Get the witness for the note
+                                let witness = bsync_data
+                                    .read()
+                                    .await
+                                    .block_data
+                                    .get_note_witness(uri, height, tx_num, output_num)
+                                    .await?;
 
-                            wallet_txns.write().await.add_new_note(
-                                txid.clone(),
-                                height,
-                                false,
-                                cb.time as u64,
-                                note,
-                                to,
-                                &extfvk,
-                                have_spending_key,
-                                witness,
-                            );
+                                let txid = WalletTx::new_txid(&ctx.hash);
+                                let nullifier = note.nf(&extfvk.fvk.vk, witness.position() as u64);
 
-                            info!("Trial decrypt Detected txid {}", &txid);
+                                wallet_txns.write().await.add_new_note(
+                                    txid.clone(),
+                                    height,
+                                    false,
+                                    timestamp,
+                                    note,
+                                    to,
+                                    &extfvk,
+                                    have_spending_key,
+                                    witness,
+                                );
 
-                            detected_txid_sender
-                                .send((txid, nullifier, height, Some(output_num as u32)))
-                                .unwrap();
+                                info!("Trial decrypt Detected txid {}", &txid);
+
+                                detected_txid_sender
+                                    .send((txid, nullifier, height, Some(output_num as u32)))
+                                    .unwrap();
+
+                                Ok::<_, String>(())
+                            }));
 
                             // No need to try the other ivks if we found one
                             break;
@@ -169,6 +181,10 @@ impl TrialDecryptions {
                     }
                 }
             }
+        }
+
+        while let Some(r) = workers.next().await {
+            r.map_err(|e| e.to_string())??;
         }
 
         // Update sync status

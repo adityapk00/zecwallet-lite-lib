@@ -7,7 +7,7 @@ use crate::{
     },
 };
 
-use futures::future::join_all;
+use futures::{future::join_all, stream::FuturesUnordered, StreamExt};
 use log::info;
 use std::{
     collections::HashSet,
@@ -73,7 +73,7 @@ impl FetchFullTxns {
         let (txid_tx, mut txid_rx) = unbounded_channel::<(TxId, BlockHeight)>();
         let h1: JoinHandle<Result<(), String>> = tokio::spawn(async move {
             let last_progress = Arc::new(AtomicU64::new(0));
-            let mut workers: Vec<JoinHandle<Result<(), String>>> = vec![];
+            let mut workers = FuturesUnordered::new();
 
             while let Some((txid, height)) = txid_rx.recv().await {
                 let config = config.clone();
@@ -101,19 +101,13 @@ impl FetchFullTxns {
 
                     Self::scan_full_tx(config, tx, height, false, block_time, keys, wallet_txns, None).await;
 
-                    Ok(())
+                    Ok::<_, String>(())
                 }));
             }
 
-            join_all(workers)
-                .await
-                .into_iter()
-                .map(|r| match r {
-                    Ok(Ok(s)) => Ok(s),
-                    Ok(Err(s)) => Err(s),
-                    Err(e) => Err(format!("{}", e)),
-                })
-                .collect::<Result<Vec<()>, String>>()?;
+            while let Some(r) = workers.next().await {
+                r.map_err(|r| r.to_string())??;
+            }
 
             bsync_data_i.read().await.sync_status.write().await.txn_scan_done = start_height - end_height + 1;
             //info!("Finished fetching all full transactions");
@@ -136,7 +130,6 @@ impl FetchFullTxns {
                 let wallet_txns = wallet_txns.clone();
 
                 let block_time = bsync_data.read().await.block_data.get_block_timestamp(&height).await;
-
                 Self::scan_full_tx(config, tx, height, false, block_time, keys, wallet_txns, None).await;
             }
 

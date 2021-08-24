@@ -384,22 +384,37 @@ async fn multiple_incoming_same_tx() {
     // 2. Check the notes - that we recieved 4 notes
     let notes = lc.do_list_notes(true).await;
     let txns = lc.do_list_transactions(false).await;
-    for i in 0..4 {
-        assert_eq!(notes["unspent_notes"][i]["created_in_block"].as_u64().unwrap(), 11);
-        assert_eq!(notes["unspent_notes"][i]["value"].as_u64().unwrap(), value + i as u64);
-        assert_eq!(notes["unspent_notes"][i]["is_change"].as_bool().unwrap(), false);
-        assert_eq!(
-            notes["unspent_notes"][i]["address"],
-            lc.wallet.keys().read().await.get_all_zaddresses()[0]
-        );
 
-        assert_eq!(txns[i]["txid"], tx.txid().to_string());
-        assert_eq!(txns[i]["block_height"].as_u64().unwrap(), 11);
-        assert_eq!(
-            txns[i]["address"],
-            lc.wallet.keys().read().await.get_all_zaddresses()[0]
-        );
-        assert_eq!(txns[i]["amount"].as_u64().unwrap(), value + i as u64);
+    if let JsonValue::Array(mut unspent_notes) = notes["unspent_notes"].clone() {
+        unspent_notes.sort_by_cached_key(|j| j["value"].as_u64().unwrap());
+
+        for i in 0..4 {
+            assert_eq!(unspent_notes[i]["created_in_block"].as_u64().unwrap(), 11);
+            assert_eq!(unspent_notes[i]["value"].as_u64().unwrap(), value + i as u64);
+            assert_eq!(unspent_notes[i]["is_change"].as_bool().unwrap(), false);
+            assert_eq!(
+                unspent_notes[i]["address"],
+                lc.wallet.keys().read().await.get_all_zaddresses()[0]
+            );
+        }
+    } else {
+        panic!("unspent notes not found");
+    }
+
+    if let JsonValue::Array(mut sorted_txns) = txns.clone() {
+        sorted_txns.sort_by_cached_key(|t| t["amount"].as_u64().unwrap());
+
+        for i in 0..4 {
+            assert_eq!(sorted_txns[i]["txid"], tx.txid().to_string());
+            assert_eq!(sorted_txns[i]["block_height"].as_u64().unwrap(), 11);
+            assert_eq!(
+                sorted_txns[i]["address"],
+                lc.wallet.keys().read().await.get_all_zaddresses()[0]
+            );
+            assert_eq!(sorted_txns[i]["amount"].as_u64().unwrap(), value + i as u64);
+        }
+    } else {
+        panic!("txns is not array");
     }
 
     // 3. Send a big tx, so all the value is spent
