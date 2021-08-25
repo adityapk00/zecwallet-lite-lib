@@ -823,7 +823,7 @@ impl LightClient {
                         "unconfirmed" => v.unconfirmed,
                         "datetime"     => v.datetime,
                         "txid"         => format!("{}", v.txid),
-                        "zec_price"    => v.zec_price,
+                        "zec_price"    => v.zec_price.map(|p| (p * 100.0).round() / 100.0),
                         "amount"       => total_change as i64
                                             - v.total_sapling_value_spent as i64
                                             - v.total_transparent_value_spent as i64,
@@ -840,8 +840,8 @@ impl LightClient {
                         "datetime"     => v.datetime,
                         "position"     => i,
                         "txid"         => format!("{}", v.txid),
-                        "zec_price"    => v.zec_price,
                         "amount"       => nd.note.value as i64,
+                        "zec_price"    => v.zec_price.map(|p| (p * 100.0).round() / 100.0),
                         "address"      => LightWallet::note_address(self.config.hrp_sapling_address(), nd),
                         "memo"         => LightWallet::memo_str(nd.memo.clone())
                     };
@@ -873,8 +873,8 @@ impl LightClient {
                         "unconfirmed" => v.unconfirmed,
                         "datetime"     => v.datetime,
                         "txid"         => format!("{}", v.txid),
-                        "zec_price"    => v.zec_price,
                         "amount"       => total_transparent_received as i64 - v.total_transparent_value_spent as i64,
+                        "zec_price"    => v.zec_price.map(|p| (p * 100.0).round() / 100.0),
                         "address"      => v.utxos.iter().map(|u| u.address.clone()).collect::<Vec<String>>().join(","),
                         "memo"         => None::<String>
                     })
