@@ -37,6 +37,7 @@ Zecwallet-CLI does automatic note and utxo management, which means it doesn't al
 
 ```
 git clone https://github.com/adityapk00/zecwallet-light-cli.git
+cd zecwallet-light-cli
 cargo build --release
 ./target/release/zecwallet-cli
 ```
