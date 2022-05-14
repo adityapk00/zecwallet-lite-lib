@@ -29,6 +29,8 @@ pub fn main() {
 
     let maybe_server = matches.value_of("server").map(|s| s.to_string());
 
+    let maybe_data_dir = matches.value_of("data-dir").map(|s| s.to_string());
+
     let seed = matches.value_of("seed").map(|s| s.to_string());
     let maybe_birthday = matches.value_of("birthday");
 
@@ -60,7 +62,7 @@ pub fn main() {
 
     let nosync = matches.is_present("nosync");
 
-    let startup_chan = startup(server, seed, birthday, !nosync, command.is_none());
+    let startup_chan = startup(server, seed, birthday, maybe_data_dir ,!nosync, command.is_none());
     let (command_tx, resp_rx) = match startup_chan {
         Ok(c) => c,
         Err(e) => {

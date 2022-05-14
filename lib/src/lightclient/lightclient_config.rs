@@ -15,10 +15,9 @@ use log4rs::{
     Config,
 };
 use tokio::runtime::Runtime;
-use zcash_address::Network;
 use zcash_primitives::{
-    consensus::{self, BlockHeight, NetworkUpgrade, Parameters},
-    constants::{self},
+    consensus::Network,
+    constants::{mainnet, regtest, testnet},
 };
 
 use crate::{grpc_connector::GrpcConnector, lightclient::checkpoints};
@@ -26,7 +25,7 @@ use crate::{grpc_connector::GrpcConnector, lightclient::checkpoints};
 pub const DEFAULT_SERVER: &str = "https://lwdv3.zecwallet.co";
 pub const WALLET_NAME: &str = "zecwallet-light-wallet.dat";
 pub const LOGFILE_NAME: &str = "zecwallet-light-wallet.debug.log";
-pub const DEFAULT_ANCHOR_OFFSET: u32 = 1;
+pub const ANCHOR_OFFSET: [u32; 5] = [4, 0, 0, 0, 0];
 pub const MAX_REORG: usize = 100;
 pub const GAP_RULE_UNUSED_ADDRESSES: usize = if cfg!(any(target_os = "ios", target_os = "android")) {
     0
@@ -34,129 +33,77 @@ pub const GAP_RULE_UNUSED_ADDRESSES: usize = if cfg!(any(target_os = "ios", targ
     5
 };
 
-// Marker struct for the production network.
-#[derive(PartialEq, Copy, Clone, Debug)]
-pub struct UnitTestNetwork;
-
-impl Parameters for UnitTestNetwork {
-    fn activation_height(&self, nu: NetworkUpgrade) -> Option<BlockHeight> {
-        match nu {
-            NetworkUpgrade::Overwinter => Some(BlockHeight::from(1)),
-            NetworkUpgrade::Sapling => Some(BlockHeight::from(1)),
-            NetworkUpgrade::Blossom => Some(BlockHeight::from(1)),
-            NetworkUpgrade::Heartwood => Some(BlockHeight::from(1)),
-            NetworkUpgrade::Canopy => Some(BlockHeight::from(1)),
-            NetworkUpgrade::Nu5 => Some(BlockHeight::from(1)),
-            #[cfg(feature = "zfuture")]
-            NetworkUpgrade::ZFuture => None,
-        }
-    }
-
-    fn coin_type(&self) -> u32 {
-        constants::mainnet::COIN_TYPE
-    }
-
-    fn hrp_sapling_extended_spending_key(&self) -> &str {
-        constants::mainnet::HRP_SAPLING_EXTENDED_SPENDING_KEY
-    }
-
-    fn hrp_sapling_extended_full_viewing_key(&self) -> &str {
-        constants::mainnet::HRP_SAPLING_EXTENDED_FULL_VIEWING_KEY
-    }
-
-    fn hrp_sapling_payment_address(&self) -> &str {
-        constants::mainnet::HRP_SAPLING_PAYMENT_ADDRESS
-    }
-
-    fn b58_pubkey_address_prefix(&self) -> [u8; 2] {
-        constants::mainnet::B58_PUBKEY_ADDRESS_PREFIX
-    }
-
-    fn b58_script_address_prefix(&self) -> [u8; 2] {
-        constants::mainnet::B58_SCRIPT_ADDRESS_PREFIX
-    }
-
-    fn address_network(&self) -> Option<zcash_address::Network> {
-        Some(zcash_address::Network::Main)
-    }
-}
-
-pub const UNITTEST_NETWORK: UnitTestNetwork = UnitTestNetwork;
-
 #[derive(Clone, Debug)]
-pub struct LightClientConfig<P> {
+pub struct LightClientConfig {
     pub server: http::Uri,
     pub chain_name: String,
     pub sapling_activation_height: u64,
-    pub anchor_offset: u32,
+    pub anchor_offset: [u32; 5],
     pub monitor_mempool: bool,
     pub data_dir: Option<String>,
-    pub params: P,
 }
 
-impl<P: consensus::Parameters> LightClientConfig<P> {
+impl LightClientConfig {
     // Create an unconnected (to any server) config to test for local wallet etc...
-    pub fn create_unconnected(params: P, dir: Option<String>) -> LightClientConfig<P> {
+    pub fn create_unconnected(chain_name: String, dir: Option<String>) -> LightClientConfig {
         LightClientConfig {
             server: http::Uri::default(),
-            chain_name: params.hrp_sapling_payment_address().to_string(),
+            chain_name: chain_name,
             sapling_activation_height: 1,
             monitor_mempool: false,
-            anchor_offset: 1,
+            anchor_offset: [4u32; 5],
             data_dir: dir,
-            params: params.clone(),
         }
     }
-
-    pub fn create(params: P, server: http::Uri) -> io::Result<(LightClientConfig<P>, u64)> {
+   
+    pub fn create_on_data_dir(server: http::Uri, data_dir: Option<String>) -> io::Result<(LightClientConfig, u64)> {
         use std::net::ToSocketAddrs;
 
-        let s = server.clone();
-        if let Ok((chain_name, sapling_activation_height, block_height)) =
-            Runtime::new().unwrap().block_on(async move {
-                // Test for a connection first
-                format!("{}:{}", server.host().unwrap(), server.port().unwrap())
-                    .to_socket_addrs()?
-                    .next()
-                    .ok_or(std::io::Error::new(
-                        ErrorKind::ConnectionRefused,
-                        "Couldn't resolve server!",
-                    ))?;
+        let lc = Runtime::new().unwrap().block_on(async move {
+            // Test for a connection first
+            format!("{}:{}", server.host().unwrap(), server.port().unwrap())
+                .to_socket_addrs()?
+                .next()
+                .ok_or(std::io::Error::new(
+                    ErrorKind::ConnectionRefused,
+                    "Couldn't resolve server!",
+                ))?;
 
-                // Do a getinfo first, before opening the wallet
-                let info = GrpcConnector::get_info(server.clone())
-                    .await
-                    .map_err(|e| std::io::Error::new(ErrorKind::ConnectionRefused, e))?;
+            // Do a getinfo first, before opening the wallet
+            let info = GrpcConnector::get_info(server.clone())
+                .await
+                .map_err(|e| std::io::Error::new(ErrorKind::ConnectionRefused, e))?;
 
-                Ok::<_, std::io::Error>((info.chain_name, info.sapling_activation_height, info.block_height))
-            })
-        {
+            // Create a Light Client Config
             let config = LightClientConfig {
-                server: s,
-                chain_name,
-                monitor_mempool: false,
-                sapling_activation_height,
-                anchor_offset: DEFAULT_ANCHOR_OFFSET,
-                data_dir: None,
-                params,
+                server,
+                chain_name: info.chain_name,
+                monitor_mempool: true,
+                sapling_activation_height: info.sapling_activation_height,
+                anchor_offset: ANCHOR_OFFSET,
+                data_dir: data_dir,
             };
 
-            Ok((config, block_height))
-        } else {
-            panic!("Couldn't get network");
-        }
+            Ok((config, info.block_height))
+        });
+
+        lc
+    }
+
+    pub fn create(server: http::Uri) -> io::Result<(LightClientConfig,u64)> {
+        Self::create_on_data_dir(server, None)
     }
 
     pub fn set_data_dir(&mut self, dir_str: String) {
         self.data_dir = Some(dir_str);
     }
 
-    pub fn get_params(&self) -> P {
-        self.params.clone()
-    }
-
-    pub fn get_network(&self) -> Network {
-        self.params.address_network().unwrap_or(Network::Main).clone()
+    pub fn get_params(&self) -> Network {
+        match self.chain_name.as_str() {
+            "main" => Network::MainNetwork,
+            "test" => Network::TestNetwork,
+            _ => panic!("Unknown network"),
+        }
     }
 
     /// Build the Logging config
@@ -191,6 +138,7 @@ impl<P: consensus::Parameters> LightClientConfig<P> {
             PathBuf::from(&self.data_dir.as_ref().unwrap()).into_boxed_path()
         } else {
             let mut zcash_data_location;
+            // If there's some --data-dir path provided, use it
             if self.data_dir.is_some() {
                 zcash_data_location = PathBuf::from(&self.data_dir.as_ref().unwrap());
             } else {
@@ -206,9 +154,9 @@ impl<P: consensus::Parameters> LightClientConfig<P> {
                 };
 
                 match &self.chain_name[..] {
-                    "zs" | "main" => {}
-                    "ztestsapling" | "test" => zcash_data_location.push("testnet3"),
-                    "zregtestsapling" | "regtest" => zcash_data_location.push("regtest"),
+                    "main" => {}
+                    "test" => zcash_data_location.push("testnet3"),
+                    "regtest" => zcash_data_location.push("regtest"),
                     c => panic!("Unknown chain {}", c),
                 };
             }
@@ -301,7 +249,7 @@ impl<P: consensus::Parameters> LightClientConfig<P> {
         }
 
         info!("Getting sapling tree from LightwalletD at height {}", height);
-        match GrpcConnector::get_merkle_tree(self.server.clone(), height).await {
+        match GrpcConnector::get_sapling_tree(self.server.clone(), height).await {
             Ok(tree_state) => {
                 let hash = tree_state.hash.clone();
                 let tree = tree_state.tree.clone();
@@ -338,34 +286,64 @@ impl<P: consensus::Parameters> LightClientConfig<P> {
     }
 
     pub fn get_coin_type(&self) -> u32 {
-        self.params.coin_type()
+        match &self.chain_name[..] {
+            "main" => mainnet::COIN_TYPE,
+            "test" => testnet::COIN_TYPE,
+            "regtest" => regtest::COIN_TYPE,
+            c => panic!("Unknown chain {}", c),
+        }
     }
 
     pub fn hrp_sapling_address(&self) -> &str {
-        self.params.hrp_sapling_payment_address()
+        match &self.chain_name[..] {
+            "main" => mainnet::HRP_SAPLING_PAYMENT_ADDRESS,
+            "test" => testnet::HRP_SAPLING_PAYMENT_ADDRESS,
+            "regtest" => regtest::HRP_SAPLING_PAYMENT_ADDRESS,
+            c => panic!("Unknown chain {}", c),
+        }
     }
 
     pub fn hrp_sapling_private_key(&self) -> &str {
-        self.params.hrp_sapling_extended_spending_key()
+        match &self.chain_name[..] {
+            "main" => mainnet::HRP_SAPLING_EXTENDED_SPENDING_KEY,
+            "test" => testnet::HRP_SAPLING_EXTENDED_SPENDING_KEY,
+            "regtest" => regtest::HRP_SAPLING_EXTENDED_SPENDING_KEY,
+            c => panic!("Unknown chain {}", c),
+        }
     }
 
     pub fn hrp_sapling_viewing_key(&self) -> &str {
-        self.params.hrp_sapling_extended_full_viewing_key()
+        match &self.chain_name[..] {
+            "main" => mainnet::HRP_SAPLING_EXTENDED_FULL_VIEWING_KEY,
+            "test" => testnet::HRP_SAPLING_EXTENDED_FULL_VIEWING_KEY,
+            "regtest" => regtest::HRP_SAPLING_EXTENDED_FULL_VIEWING_KEY,
+            c => panic!("Unknown chain {}", c),
+        }
     }
 
     pub fn base58_pubkey_address(&self) -> [u8; 2] {
-        self.params.b58_pubkey_address_prefix()
+        match &self.chain_name[..] {
+            "main" => mainnet::B58_PUBKEY_ADDRESS_PREFIX,
+            "test" => testnet::B58_PUBKEY_ADDRESS_PREFIX,
+            "regtest" => regtest::B58_PUBKEY_ADDRESS_PREFIX,
+            c => panic!("Unknown chain {}", c),
+        }
     }
 
     pub fn base58_script_address(&self) -> [u8; 2] {
-        self.params.b58_script_address_prefix()
+        match &self.chain_name[..] {
+            "main" => mainnet::B58_SCRIPT_ADDRESS_PREFIX,
+            "test" => testnet::B58_SCRIPT_ADDRESS_PREFIX,
+            "regtest" => regtest::B58_SCRIPT_ADDRESS_PREFIX,
+            c => panic!("Unknown chain {}", c),
+        }
     }
 
     pub fn base58_secretkey_prefix(&self) -> [u8; 1] {
         match &self.chain_name[..] {
-            "zs" | "main" => [0x80],
-            "ztestsapling" => [0xEF],
-            "zregtestsapling" => [0xEF],
+            "main" => [0x80],
+            "test" => [0xEF],
+            "regtest" => [0xEF],
             c => panic!("Unknown chain {}", c),
         }
     }
