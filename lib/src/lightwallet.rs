@@ -1228,25 +1228,25 @@ impl LightWallet {
         }
 
         // Set up a channel to recieve updates on the progress of building the transaction.
-        let (tx, rx) = channel::<u32>();
-        let progress = self.send_progress.clone();
+        // let (tx, rx) = channel::<u32>();
+        // let progress = self.send_progress.clone();
 
         // Use a separate thread to handle sending from std::mpsc to tokio::sync::mpsc
-        let (tx2, mut rx2) = tokio::sync::mpsc::unbounded_channel();
-        std::thread::spawn(move || {
-            while let Ok(r) = rx.recv() {
-                tx2.send(r).unwrap();
-            }
-        });
+        // let (tx2, mut rx2) = tokio::sync::mpsc::unbounded_channel();
+        // std::thread::spawn(move || {
+        //     while let Ok(r) = rx.recv() {
+        //         tx2.send(r).unwrap();
+        //     }
+        // });
 
-        let progress_handle = tokio::spawn(async move {
-            while let Some(r) = rx2.recv().await {
-                println!("Progress: {}", r);
-                progress.write().await.progress = r;
-            }
+        // let progress_handle = tokio::spawn(async move {
+        //     while let Some(r) = rx2.recv().await {
+        //         println!("Progress: {}", r);
+        //         progress.write().await.progress = r;
+        //     }
 
-            progress.write().await.is_send_in_progress = false;
-        });
+        //     progress.write().await.is_send_in_progress = false;
+        // });
 
         {
             let mut p = self.send_progress.write().await;
@@ -1256,10 +1256,10 @@ impl LightWallet {
         }
 
         println!("{}: Building transaction", now() - start_time);
-        let (tx, _) = match builder.build_with_progress_notifier(
+        let (tx, _) = match builder.build(
             BranchId::try_from(consensus_branch_id).unwrap(),
             &prover,
-            Some(tx),
+            //Some(tx),
         ) {
             Ok(res) => res,
             Err(e) => {
@@ -1271,7 +1271,7 @@ impl LightWallet {
         };
 
         // Wait for all the progress to be updated
-        progress_handle.await.unwrap();
+        // progress_handle.await.unwrap();
 
         println!("{}: Transaction created", now() - start_time);
         println!("Transaction ID: {}", tx.txid());
