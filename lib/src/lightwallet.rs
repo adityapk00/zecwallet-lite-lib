@@ -41,7 +41,7 @@ use zcash_primitives::{
 
 use self::{
     data::{BlockData, SaplingNoteData, Utxo, WalletZecPriceInfo},
-    keys::Keys,
+    keys::InMemoryKeys,
     message::Message,
     wallet_txns::WalletTxns,
 };
@@ -142,9 +142,9 @@ impl WalletOptions {
     }
 }
 
-pub struct LightWallet {
+pub struct LightWallet<K = InMemoryKeys> {
     // All the keys in the wallet
-    keys: Arc<RwLock<Keys>>,
+    keys: Arc<RwLock<K>>,
 
     // The block at which this wallet was born. Rescans
     // will start from here.
@@ -172,182 +172,7 @@ pub struct LightWallet {
     pub price: Arc<RwLock<WalletZecPriceInfo>>,
 }
 
-impl LightWallet {
-    pub fn serialized_version() -> u64 {
-        return 24;
-    }
-
-    pub fn new(
-        config: LightClientConfig,
-        seed_phrase: Option<String>,
-        height: u64,
-        num_zaddrs: u32,
-    ) -> io::Result<Self> {
-        let keys = Keys::new(&config, seed_phrase, num_zaddrs).map_err(|e| Error::new(ErrorKind::InvalidData, e))?;
-
-        Ok(Self {
-            keys: Arc::new(RwLock::new(keys)),
-            txns: Arc::new(RwLock::new(WalletTxns::new())),
-            blocks: Arc::new(RwLock::new(vec![])),
-            wallet_options: Arc::new(RwLock::new(WalletOptions::default())),
-            config,
-            birthday: AtomicU64::new(height),
-            verified_tree: Arc::new(RwLock::new(None)),
-            send_progress: Arc::new(RwLock::new(SendProgress::new(0))),
-            price: Arc::new(RwLock::new(WalletZecPriceInfo::new())),
-        })
-    }
-
-    pub async fn read<R: Read>(mut reader: R, config: &LightClientConfig) -> io::Result<Self> {
-        let version = reader.read_u64::<LittleEndian>()?;
-        if version > Self::serialized_version() {
-            let e = format!(
-                "Don't know how to read wallet version {}. Do you have the latest version?",
-                version
-            );
-            error!("{}", e);
-            return Err(io::Error::new(ErrorKind::InvalidData, e));
-        }
-
-        info!("Reading wallet version {}", version);
-
-        let keys = if version <= 14 {
-            Keys::read_old(version, &mut reader, config)
-        } else {
-            Keys::read(&mut reader, config)
-        }?;
-
-        let mut blocks = Vector::read(&mut reader, |r| BlockData::read(r))?;
-        if version <= 14 {
-            // Reverse the order, since after version 20, we need highest-block-first
-            blocks = blocks.into_iter().rev().collect();
-        }
-
-        let mut txns = if version <= 14 {
-            WalletTxns::read_old(&mut reader)
-        } else {
-            WalletTxns::read(&mut reader)
-        }?;
-
-        let chain_name = utils::read_string(&mut reader)?;
-
-        if chain_name != config.chain_name {
-            return Err(Error::new(
-                ErrorKind::InvalidData,
-                format!(
-                    "Wallet chain name {} doesn't match expected {}",
-                    chain_name, config.chain_name
-                ),
-            ));
-        }
-
-        let wallet_options = if version <= 23 {
-            WalletOptions::default()
-        } else {
-            WalletOptions::read(&mut reader)?
-        };
-
-        let birthday = reader.read_u64::<LittleEndian>()?;
-
-        if version <= 22 {
-            let _sapling_tree_verified = if version <= 12 { true } else { reader.read_u8()? == 1 };
-        }
-
-        let verified_tree = if version <= 21 {
-            None
-        } else {
-            Optional::read(&mut reader, |r| {
-                use prost::Message;
-
-                let buf = Vector::read(r, |r| r.read_u8())?;
-                TreeState::decode(&buf[..])
-                    .map_err(|e| io::Error::new(ErrorKind::InvalidData, format!("Read Error: {}", e.to_string())))
-            })?
-        };
-
-        // If version <= 8, adjust the "is_spendable" status of each note data
-        if version <= 8 {
-            // Collect all spendable keys
-            let spendable_keys: Vec<_> = keys
-                .get_all_extfvks()
-                .into_iter()
-                .filter(|extfvk| keys.have_spending_key(extfvk))
-                .collect();
-
-            txns.adjust_spendable_status(spendable_keys);
-        }
-
-        let price = if version <= 13 {
-            WalletZecPriceInfo::new()
-        } else {
-            WalletZecPriceInfo::read(&mut reader)?
-        };
-
-        let mut lw = Self {
-            keys: Arc::new(RwLock::new(keys)),
-            txns: Arc::new(RwLock::new(txns)),
-            blocks: Arc::new(RwLock::new(blocks)),
-            config: config.clone(),
-            wallet_options: Arc::new(RwLock::new(wallet_options)),
-            birthday: AtomicU64::new(birthday),
-            verified_tree: Arc::new(RwLock::new(verified_tree)),
-            send_progress: Arc::new(RwLock::new(SendProgress::new(0))),
-            price: Arc::new(RwLock::new(price)),
-        };
-
-        // For old wallets, remove unused addresses
-        if version <= 14 {
-            lw.remove_unused_taddrs().await;
-            lw.remove_unused_zaddrs().await;
-        }
-
-        if version <= 14 {
-            lw.set_witness_block_heights().await;
-        }
-
-        Ok(lw)
-    }
-
-    pub async fn write<W: Write>(&self, mut writer: W) -> io::Result<()> {
-        if self.keys.read().await.encrypted && self.keys.read().await.unlocked {
-            return Err(Error::new(
-                ErrorKind::InvalidInput,
-                format!("Cannot write while wallet is unlocked while encrypted."),
-            ));
-        }
-
-        // Write the version
-        writer.write_u64::<LittleEndian>(Self::serialized_version())?;
-
-        // Write all the keys
-        self.keys.read().await.write(&mut writer)?;
-
-        Vector::write(&mut writer, &self.blocks.read().await, |w, b| b.write(w))?;
-
-        self.txns.read().await.write(&mut writer)?;
-
-        utils::write_string(&mut writer, &self.config.chain_name)?;
-
-        self.wallet_options.read().await.write(&mut writer)?;
-
-        // While writing the birthday, get it from the fn so we recalculate it properly
-        // in case of rescans etc...
-        writer.write_u64::<LittleEndian>(self.get_birthday().await)?;
-
-        Optional::write(&mut writer, &self.verified_tree.read().await.as_ref(), |w, t| {
-            use prost::Message;
-            let mut buf = vec![];
-
-            t.encode(&mut buf)?;
-            Vector::write(w, &buf, |w, b| w.write_u8(*b))
-        })?;
-
-        // Price info
-        self.price.read().await.write(&mut writer)?;
-
-        Ok(())
-    }
-
+impl<K> LightWallet<K> {
     // Before version 20, witnesses didn't store their height, so we need to update them.
     pub async fn set_witness_block_heights(&mut self) {
         let top_height = self.last_scanned_height().await;
@@ -358,7 +183,7 @@ impl LightWallet {
         });
     }
 
-    pub fn keys(&self) -> Arc<RwLock<Keys>> {
+    pub fn keys(&self) -> Arc<RwLock<K>> {
         self.keys.clone()
     }
 
@@ -437,14 +262,6 @@ impl LightWallet {
         let _ = std::mem::replace(&mut *g, SendProgress::new(next_id));
     }
 
-    pub async fn is_unlocked_for_spending(&self) -> bool {
-        self.keys.read().await.is_unlocked_for_spending()
-    }
-
-    pub async fn is_encrypted(&self) -> bool {
-        self.keys.read().await.is_encrypted()
-    }
-
     // Get the first block that this wallet has a tx in. This is often used as the wallet's "birthday"
     // If there are no Txns, then the actual birthday (which is recorder at wallet creation) is returned
     // If no birthday was recorded, return the sapling activation height
@@ -471,121 +288,6 @@ impl LightWallet {
             self.birthday
                 .store(wallet_birthday, std::sync::atomic::Ordering::SeqCst);
         }
-    }
-
-    pub async fn add_imported_tk(&self, sk: String) -> String {
-        if self.keys.read().await.encrypted {
-            return "Error: Can't import transparent address key while wallet is encrypted".to_string();
-        }
-
-        let sk = match WalletTKey::from_sk_string(&self.config, sk) {
-            Err(e) => return format!("Error: {}", e),
-            Ok(k) => k,
-        };
-
-        let address = sk.address.clone();
-
-        if self
-            .keys
-            .read()
-            .await
-            .tkeys
-            .iter()
-            .find(|&tk| tk.address == address)
-            .is_some()
-        {
-            return "Error: Key already exists".to_string();
-        }
-
-        self.keys.write().await.tkeys.push(sk);
-        return address;
-    }
-
-    // Add a new imported spending key to the wallet
-    /// NOTE: This will not rescan the wallet
-    pub async fn add_imported_sk(&self, sk: String, birthday: u64) -> String {
-        if self.keys.read().await.encrypted {
-            return "Error: Can't import spending key while wallet is encrypted".to_string();
-        }
-
-        // First, try to interpret the key
-        let extsk = match decode_extended_spending_key(self.config.hrp_sapling_private_key(), &sk) {
-            Ok(Some(k)) => k,
-            Ok(None) => return format!("Error: Couldn't decode spending key"),
-            Err(e) => return format!("Error importing spending key: {}", e),
-        };
-
-        // Make sure the key doesn't already exist
-        if self
-            .keys
-            .read()
-            .await
-            .zkeys
-            .iter()
-            .find(|&wk| wk.extsk.is_some() && wk.extsk.as_ref().unwrap() == &extsk.clone())
-            .is_some()
-        {
-            return "Error: Key already exists".to_string();
-        }
-
-        let extfvk = ExtendedFullViewingKey::from(&extsk);
-        let zaddress = {
-            let zkeys = &mut self.keys.write().await.zkeys;
-            let maybe_existing_zkey = zkeys.iter_mut().find(|wk| wk.extfvk == extfvk);
-
-            // If the viewing key exists, and is now being upgraded to the spending key, replace it in-place
-            if maybe_existing_zkey.is_some() {
-                let mut existing_zkey = maybe_existing_zkey.unwrap();
-                existing_zkey.extsk = Some(extsk);
-                existing_zkey.keytype = WalletZKeyType::ImportedSpendingKey;
-                existing_zkey.zaddress.clone()
-            } else {
-                let newkey = WalletZKey::new_imported_sk(extsk);
-                zkeys.push(newkey.clone());
-                newkey.zaddress
-            }
-        };
-
-        // Adjust wallet birthday
-        self.adjust_wallet_birthday(birthday);
-
-        encode_payment_address(self.config.hrp_sapling_address(), &zaddress)
-    }
-
-    // Add a new imported viewing key to the wallet
-    /// NOTE: This will not rescan the wallet
-    pub async fn add_imported_vk(&self, vk: String, birthday: u64) -> String {
-        if !self.keys().read().await.unlocked {
-            return "Error: Can't add key while wallet is locked".to_string();
-        }
-
-        // First, try to interpret the key
-        let extfvk = match decode_extended_full_viewing_key(self.config.hrp_sapling_viewing_key(), &vk) {
-            Ok(Some(k)) => k,
-            Ok(None) => return format!("Error: Couldn't decode viewing key"),
-            Err(e) => return format!("Error importing viewing key: {}", e),
-        };
-
-        // Make sure the key doesn't already exist
-        if self
-            .keys()
-            .read()
-            .await
-            .zkeys
-            .iter()
-            .find(|wk| wk.extfvk == extfvk.clone())
-            .is_some()
-        {
-            return "Error: Key already exists".to_string();
-        }
-
-        let newkey = WalletZKey::new_imported_viewkey(extfvk);
-        self.keys().write().await.zkeys.push(newkey.clone());
-
-        // Adjust wallet birthday
-        self.adjust_wallet_birthday(birthday);
-
-        encode_payment_address(self.config.hrp_sapling_address(), &newkey.zaddress)
     }
 
     /// Clears all the downloaded blocks and resets the state back to the initial block.
@@ -724,6 +426,452 @@ impl LightWallet {
             .sum::<u64>()
     }
 
+    pub async fn verified_zbalance(&self, addr: Option<String>) -> u64 {
+        let anchor_height = self.get_anchor_height().await;
+
+        self.txns
+            .read()
+            .await
+            .current
+            .values()
+            .map(|tx| {
+                if tx.block <= BlockHeight::from_u32(anchor_height) {
+                    tx.notes
+                        .iter()
+                        .filter(|nd| nd.spent.is_none() && nd.unconfirmed_spent.is_none())
+                        .filter(|nd| match addr.as_ref() {
+                            Some(a) => {
+                                *a == encode_payment_address(
+                                    self.config.hrp_sapling_address(),
+                                    &nd.extfvk.fvk.vk.to_payment_address(nd.diversifier).unwrap(),
+                                )
+                            }
+                            None => true,
+                        })
+                        .map(|nd| nd.note.value)
+                        .sum::<u64>()
+                } else {
+                    0
+                }
+            })
+            .sum::<u64>()
+    }
+
+    // Add the spent_at_height for each sapling note that has been spent. This field was added in wallet version 8,
+    // so for older wallets, it will need to be added
+    pub async fn fix_spent_at_height(&self) {
+        // First, build an index of all the txids and the heights at which they were spent.
+        let spent_txid_map: HashMap<_, _> = self
+            .txns
+            .read()
+            .await
+            .current
+            .iter()
+            .map(|(txid, wtx)| (txid.clone(), wtx.block))
+            .collect();
+
+        // Go over all the sapling notes that might need updating
+        self.txns.write().await.current.values_mut().for_each(|wtx| {
+            wtx.notes
+                .iter_mut()
+                .filter(|nd| nd.spent.is_some() && nd.spent.unwrap().1 == 0)
+                .for_each(|nd| {
+                    let txid = nd.spent.unwrap().0;
+                    if let Some(height) = spent_txid_map.get(&txid).map(|b| *b) {
+                        nd.spent = Some((txid, height.into()));
+                    }
+                })
+        });
+
+        // Go over all the Utxos that might need updating
+        self.txns.write().await.current.values_mut().for_each(|wtx| {
+            wtx.utxos
+                .iter_mut()
+                .filter(|utxo| utxo.spent.is_some() && utxo.spent_at_height.is_none())
+                .for_each(|utxo| {
+                    utxo.spent_at_height = spent_txid_map.get(&utxo.spent.unwrap()).map(|b| u32::from(*b) as i32);
+                })
+        });
+    }
+}
+
+impl LightWallet<InMemoryKeys> {
+    pub fn serialized_version() -> u64 {
+        return 24;
+    }
+
+    pub fn new(
+        config: LightClientConfig,
+        seed_phrase: Option<String>,
+        height: u64,
+        num_zaddrs: u32,
+    ) -> io::Result<Self> {
+        let keys =
+            InMemoryKeys::new(&config, seed_phrase, num_zaddrs).map_err(|e| Error::new(ErrorKind::InvalidData, e))?;
+
+        Ok(Self {
+            keys: Arc::new(RwLock::new(keys)),
+            txns: Arc::new(RwLock::new(WalletTxns::new())),
+            blocks: Arc::new(RwLock::new(vec![])),
+            wallet_options: Arc::new(RwLock::new(WalletOptions::default())),
+            config,
+            birthday: AtomicU64::new(height),
+            verified_tree: Arc::new(RwLock::new(None)),
+            send_progress: Arc::new(RwLock::new(SendProgress::new(0))),
+            price: Arc::new(RwLock::new(WalletZecPriceInfo::new())),
+        })
+    }
+
+    pub async fn read<R: Read>(mut reader: R, config: &LightClientConfig) -> io::Result<Self> {
+        let version = reader.read_u64::<LittleEndian>()?;
+        if version > Self::serialized_version() {
+            let e = format!(
+                "Don't know how to read wallet version {}. Do you have the latest version?",
+                version
+            );
+            error!("{}", e);
+            return Err(io::Error::new(ErrorKind::InvalidData, e));
+        }
+
+        info!("Reading wallet version {}", version);
+
+        let keys = if version <= 14 {
+            InMemoryKeys::read_old(version, &mut reader, config)
+        } else {
+            InMemoryKeys::read(&mut reader, config)
+        }?;
+
+        let mut blocks = Vector::read(&mut reader, |r| BlockData::read(r))?;
+        if version <= 14 {
+            // Reverse the order, since after version 20, we need highest-block-first
+            blocks = blocks.into_iter().rev().collect();
+        }
+
+        let mut txns = if version <= 14 {
+            WalletTxns::read_old(&mut reader)
+        } else {
+            WalletTxns::read(&mut reader)
+        }?;
+
+        let chain_name = utils::read_string(&mut reader)?;
+
+        if chain_name != config.chain_name {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                format!(
+                    "Wallet chain name {} doesn't match expected {}",
+                    chain_name, config.chain_name
+                ),
+            ));
+        }
+
+        let wallet_options = if version <= 23 {
+            WalletOptions::default()
+        } else {
+            WalletOptions::read(&mut reader)?
+        };
+
+        let birthday = reader.read_u64::<LittleEndian>()?;
+
+        if version <= 22 {
+            let _sapling_tree_verified = if version <= 12 { true } else { reader.read_u8()? == 1 };
+        }
+
+        let verified_tree = if version <= 21 {
+            None
+        } else {
+            Optional::read(&mut reader, |r| {
+                use prost::Message;
+
+                let buf = Vector::read(r, |r| r.read_u8())?;
+                TreeState::decode(&buf[..])
+                    .map_err(|e| io::Error::new(ErrorKind::InvalidData, format!("Read Error: {}", e.to_string())))
+            })?
+        };
+
+        // If version <= 8, adjust the "is_spendable" status of each note data
+        if version <= 8 {
+            // Collect all spendable keys
+            let spendable_keys: Vec<_> = keys
+                .get_all_extfvks()
+                .into_iter()
+                .filter(|extfvk| keys.have_spending_key(extfvk))
+                .collect();
+
+            txns.adjust_spendable_status(spendable_keys);
+        }
+
+        let price = if version <= 13 {
+            WalletZecPriceInfo::new()
+        } else {
+            WalletZecPriceInfo::read(&mut reader)?
+        };
+
+        let mut lw = Self {
+            keys: Arc::new(RwLock::new(keys)),
+            txns: Arc::new(RwLock::new(txns)),
+            blocks: Arc::new(RwLock::new(blocks)),
+            config: config.clone(),
+            wallet_options: Arc::new(RwLock::new(wallet_options)),
+            birthday: AtomicU64::new(birthday),
+            verified_tree: Arc::new(RwLock::new(verified_tree)),
+            send_progress: Arc::new(RwLock::new(SendProgress::new(0))),
+            price: Arc::new(RwLock::new(price)),
+        };
+
+        // For old wallets, remove unused addresses
+        if version <= 14 {
+            lw.remove_unused_taddrs().await;
+            lw.remove_unused_zaddrs().await;
+        }
+
+        if version <= 14 {
+            lw.set_witness_block_heights().await;
+        }
+
+        Ok(lw)
+    }
+
+    pub async fn write<W: Write>(&self, mut writer: W) -> io::Result<()> {
+        if self.keys.read().await.encrypted && self.keys.read().await.unlocked {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                format!("Cannot write while wallet is unlocked while encrypted."),
+            ));
+        }
+
+        // Write the version
+        writer.write_u64::<LittleEndian>(Self::serialized_version())?;
+
+        // Write all the keys
+        self.keys.read().await.write(&mut writer)?;
+
+        Vector::write(&mut writer, &self.blocks.read().await, |w, b| b.write(w))?;
+
+        self.txns.read().await.write(&mut writer)?;
+
+        utils::write_string(&mut writer, &self.config.chain_name)?;
+
+        self.wallet_options.read().await.write(&mut writer)?;
+
+        // While writing the birthday, get it from the fn so we recalculate it properly
+        // in case of rescans etc...
+        writer.write_u64::<LittleEndian>(self.get_birthday().await)?;
+
+        Optional::write(&mut writer, &self.verified_tree.read().await.as_ref(), |w, t| {
+            use prost::Message;
+            let mut buf = vec![];
+
+            t.encode(&mut buf)?;
+            Vector::write(w, &buf, |w, b| w.write_u8(*b))
+        })?;
+
+        // Price info
+        self.price.read().await.write(&mut writer)?;
+
+        Ok(())
+    }
+
+    async fn select_notes_and_utxos(
+        &self,
+        target_amount: Amount,
+        transparent_only: bool,
+        shield_transparenent: bool,
+    ) -> (Vec<SpendableNote>, Vec<Utxo>, Amount) {
+        // First, if we are allowed to pick transparent value, pick them all
+        let utxos = if transparent_only || shield_transparenent {
+            self.get_utxos()
+                .await
+                .iter()
+                .filter(|utxo| utxo.unconfirmed_spent.is_none() && utxo.spent.is_none())
+                .map(|utxo| utxo.clone())
+                .collect::<Vec<_>>()
+        } else {
+            vec![]
+        };
+
+        // Check how much we've selected
+        let transparent_value_selected = utxos.iter().fold(Amount::zero(), |prev, utxo| {
+            prev + Amount::from_u64(utxo.value).unwrap()
+        });
+
+        // If we are allowed only transparent funds or we've selected enough then return
+        if transparent_only || transparent_value_selected >= target_amount {
+            return (vec![], utxos, transparent_value_selected);
+        }
+
+        // Start collecting sapling funds at every allowed offset
+        for anchor_offset in &self.config.anchor_offset {
+            let keys = self.keys.read().await;
+            let mut candidate_notes = self
+                .txns
+                .read()
+                .await
+                .current
+                .iter()
+                .flat_map(|(txid, tx)| tx.notes.iter().map(move |note| (*txid, note)))
+                .filter(|(_, note)| note.note.value > 0)
+                .filter_map(|(txid, note)| {
+                    // Filter out notes that are already spent
+                    if note.spent.is_some() || note.unconfirmed_spent.is_some() {
+                        None
+                    } else {
+                        // Get the spending key for the selected fvk, if we have it
+                        let extsk = keys.get_extsk_for_extfvk(&note.extfvk);
+                        SpendableNote::from(txid, note, *anchor_offset as usize, &extsk)
+                    }
+                })
+                .collect::<Vec<_>>();
+            candidate_notes.sort_by(|a, b| b.note.value.cmp(&a.note.value));
+
+            // Select the minimum number of notes required to satisfy the target value
+            let notes = candidate_notes
+                .into_iter()
+                .scan(Amount::zero(), |running_total, spendable| {
+                    if *running_total >= target_amount - transparent_value_selected {
+                        None
+                    } else {
+                        *running_total += Amount::from_u64(spendable.note.value).unwrap();
+                        Some(spendable)
+                    }
+                })
+                .collect::<Vec<_>>();
+            let sapling_value_selected = notes.iter().fold(Amount::zero(), |prev, sn| {
+                prev + Amount::from_u64(sn.note.value).unwrap()
+            });
+
+            if sapling_value_selected + transparent_value_selected >= target_amount {
+                return (notes, utxos, sapling_value_selected + transparent_value_selected);
+            }
+        }
+
+        // If we can't select enough, then we need to return empty handed
+        (vec![], vec![], Amount::zero())
+    }
+
+    pub async fn is_unlocked_for_spending(&self) -> bool {
+        self.keys.read().await.is_unlocked_for_spending()
+    }
+
+    pub async fn is_encrypted(&self) -> bool {
+        self.keys.read().await.is_encrypted()
+    }
+
+    pub async fn add_imported_tk(&self, sk: String) -> String {
+        if self.keys.read().await.encrypted {
+            return "Error: Can't import transparent address key while wallet is encrypted".to_string();
+        }
+
+        let sk = match WalletTKey::from_sk_string(&self.config, sk) {
+            Err(e) => return format!("Error: {}", e),
+            Ok(k) => k,
+        };
+
+        let address = sk.address.clone();
+
+        if self
+            .keys
+            .read()
+            .await
+            .tkeys
+            .iter()
+            .find(|&tk| tk.address == address)
+            .is_some()
+        {
+            return "Error: Key already exists".to_string();
+        }
+
+        self.keys.write().await.tkeys.push(sk);
+        return address;
+    }
+
+    // Add a new imported spending key to the wallet
+    /// NOTE: This will not rescan the wallet
+    pub async fn add_imported_sk(&self, sk: String, birthday: u64) -> String {
+        if self.keys.read().await.encrypted {
+            return "Error: Can't import spending key while wallet is encrypted".to_string();
+        }
+
+        // First, try to interpret the key
+        let extsk = match decode_extended_spending_key(self.config.hrp_sapling_private_key(), &sk) {
+            Ok(Some(k)) => k,
+            Ok(None) => return format!("Error: Couldn't decode spending key"),
+            Err(e) => return format!("Error importing spending key: {}", e),
+        };
+
+        // Make sure the key doesn't already exist
+        if self
+            .keys
+            .read()
+            .await
+            .zkeys
+            .iter()
+            .find(|&wk| wk.extsk.is_some() && wk.extsk.as_ref().unwrap() == &extsk.clone())
+            .is_some()
+        {
+            return "Error: Key already exists".to_string();
+        }
+
+        let extfvk = ExtendedFullViewingKey::from(&extsk);
+        let zaddress = {
+            let zkeys = &mut self.keys.write().await.zkeys;
+            let maybe_existing_zkey = zkeys.iter_mut().find(|wk| wk.extfvk == extfvk);
+
+            // If the viewing key exists, and is now being upgraded to the spending key, replace it in-place
+            if maybe_existing_zkey.is_some() {
+                let mut existing_zkey = maybe_existing_zkey.unwrap();
+                existing_zkey.extsk = Some(extsk);
+                existing_zkey.keytype = WalletZKeyType::ImportedSpendingKey;
+                existing_zkey.zaddress.clone()
+            } else {
+                let newkey = WalletZKey::new_imported_sk(extsk);
+                zkeys.push(newkey.clone());
+                newkey.zaddress
+            }
+        };
+
+        // Adjust wallet birthday
+        self.adjust_wallet_birthday(birthday);
+
+        encode_payment_address(self.config.hrp_sapling_address(), &zaddress)
+    }
+
+    // Add a new imported viewing key to the wallet
+    /// NOTE: This will not rescan the wallet
+    pub async fn add_imported_vk(&self, vk: String, birthday: u64) -> String {
+        if !self.keys().read().await.unlocked {
+            return "Error: Can't add key while wallet is locked".to_string();
+        }
+
+        // First, try to interpret the key
+        let extfvk = match decode_extended_full_viewing_key(self.config.hrp_sapling_viewing_key(), &vk) {
+            Ok(Some(k)) => k,
+            Ok(None) => return format!("Error: Couldn't decode viewing key"),
+            Err(e) => return format!("Error importing viewing key: {}", e),
+        };
+
+        // Make sure the key doesn't already exist
+        if self
+            .keys()
+            .read()
+            .await
+            .zkeys
+            .iter()
+            .find(|wk| wk.extfvk == extfvk.clone())
+            .is_some()
+        {
+            return "Error: Key already exists".to_string();
+        }
+
+        let newkey = WalletZKey::new_imported_viewkey(extfvk);
+        self.keys().write().await.zkeys.push(newkey.clone());
+
+        // Adjust wallet birthday
+        self.adjust_wallet_birthday(birthday);
+
+        encode_payment_address(self.config.hrp_sapling_address(), &newkey.zaddress)
+    }
+
     pub async fn unverified_zbalance(&self, addr: Option<String>) -> u64 {
         let anchor_height = self.get_anchor_height().await;
 
@@ -761,37 +909,6 @@ impl LightWallet {
                         }
                     })
                     .sum::<u64>()
-            })
-            .sum::<u64>()
-    }
-
-    pub async fn verified_zbalance(&self, addr: Option<String>) -> u64 {
-        let anchor_height = self.get_anchor_height().await;
-
-        self.txns
-            .read()
-            .await
-            .current
-            .values()
-            .map(|tx| {
-                if tx.block <= BlockHeight::from_u32(anchor_height) {
-                    tx.notes
-                        .iter()
-                        .filter(|nd| nd.spent.is_none() && nd.unconfirmed_spent.is_none())
-                        .filter(|nd| match addr.as_ref() {
-                            Some(a) => {
-                                *a == encode_payment_address(
-                                    self.config.hrp_sapling_address(),
-                                    &nd.extfvk.fvk.vk.to_payment_address(nd.diversifier).unwrap(),
-                                )
-                            }
-                            None => true,
-                        })
-                        .map(|nd| nd.note.value)
-                        .sum::<u64>()
-                } else {
-                    0
-                }
             })
             .sum::<u64>()
     }
@@ -917,120 +1034,6 @@ impl LightWallet {
 
         // If nothing matched
         None
-    }
-
-    // Add the spent_at_height for each sapling note that has been spent. This field was added in wallet version 8,
-    // so for older wallets, it will need to be added
-    pub async fn fix_spent_at_height(&self) {
-        // First, build an index of all the txids and the heights at which they were spent.
-        let spent_txid_map: HashMap<_, _> = self
-            .txns
-            .read()
-            .await
-            .current
-            .iter()
-            .map(|(txid, wtx)| (txid.clone(), wtx.block))
-            .collect();
-
-        // Go over all the sapling notes that might need updating
-        self.txns.write().await.current.values_mut().for_each(|wtx| {
-            wtx.notes
-                .iter_mut()
-                .filter(|nd| nd.spent.is_some() && nd.spent.unwrap().1 == 0)
-                .for_each(|nd| {
-                    let txid = nd.spent.unwrap().0;
-                    if let Some(height) = spent_txid_map.get(&txid).map(|b| *b) {
-                        nd.spent = Some((txid, height.into()));
-                    }
-                })
-        });
-
-        // Go over all the Utxos that might need updating
-        self.txns.write().await.current.values_mut().for_each(|wtx| {
-            wtx.utxos
-                .iter_mut()
-                .filter(|utxo| utxo.spent.is_some() && utxo.spent_at_height.is_none())
-                .for_each(|utxo| {
-                    utxo.spent_at_height = spent_txid_map.get(&utxo.spent.unwrap()).map(|b| u32::from(*b) as i32);
-                })
-        });
-    }
-
-    async fn select_notes_and_utxos(
-        &self,
-        target_amount: Amount,
-        transparent_only: bool,
-        shield_transparenent: bool,
-    ) -> (Vec<SpendableNote>, Vec<Utxo>, Amount) {
-        // First, if we are allowed to pick transparent value, pick them all
-        let utxos = if transparent_only || shield_transparenent {
-            self.get_utxos()
-                .await
-                .iter()
-                .filter(|utxo| utxo.unconfirmed_spent.is_none() && utxo.spent.is_none())
-                .map(|utxo| utxo.clone())
-                .collect::<Vec<_>>()
-        } else {
-            vec![]
-        };
-
-        // Check how much we've selected
-        let transparent_value_selected = utxos.iter().fold(Amount::zero(), |prev, utxo| {
-            prev + Amount::from_u64(utxo.value).unwrap()
-        });
-
-        // If we are allowed only transparent funds or we've selected enough then return
-        if transparent_only || transparent_value_selected >= target_amount {
-            return (vec![], utxos, transparent_value_selected);
-        }
-
-        // Start collecting sapling funds at every allowed offset
-        for anchor_offset in &self.config.anchor_offset {
-            let keys = self.keys.read().await;
-            let mut candidate_notes = self
-                .txns
-                .read()
-                .await
-                .current
-                .iter()
-                .flat_map(|(txid, tx)| tx.notes.iter().map(move |note| (*txid, note)))
-                .filter(|(_, note)| note.note.value > 0)
-                .filter_map(|(txid, note)| {
-                    // Filter out notes that are already spent
-                    if note.spent.is_some() || note.unconfirmed_spent.is_some() {
-                        None
-                    } else {
-                        // Get the spending key for the selected fvk, if we have it
-                        let extsk = keys.get_extsk_for_extfvk(&note.extfvk);
-                        SpendableNote::from(txid, note, *anchor_offset as usize, &extsk)
-                    }
-                })
-                .collect::<Vec<_>>();
-            candidate_notes.sort_by(|a, b| b.note.value.cmp(&a.note.value));
-
-            // Select the minimum number of notes required to satisfy the target value
-            let notes = candidate_notes
-                .into_iter()
-                .scan(Amount::zero(), |running_total, spendable| {
-                    if *running_total >= target_amount - transparent_value_selected {
-                        None
-                    } else {
-                        *running_total += Amount::from_u64(spendable.note.value).unwrap();
-                        Some(spendable)
-                    }
-                })
-                .collect::<Vec<_>>();
-            let sapling_value_selected = notes.iter().fold(Amount::zero(), |prev, sn| {
-                prev + Amount::from_u64(sn.note.value).unwrap()
-            });
-
-            if sapling_value_selected + transparent_value_selected >= target_amount {
-                return (notes, utxos, sapling_value_selected + transparent_value_selected);
-            }
-        }
-
-        // If we can't select enough, then we need to return empty handed
-        (vec![], vec![], Amount::zero())
     }
 
     pub async fn send_to_address<F, Fut, P: TxProver>(

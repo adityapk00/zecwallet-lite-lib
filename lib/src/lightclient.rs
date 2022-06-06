@@ -8,7 +8,7 @@ use crate::{
     compact_formats::RawTransaction,
     grpc_connector::GrpcConnector,
     lightclient::lightclient_config::MAX_REORG,
-    lightwallet::{self, data::WalletTx, message::Message, now, LightWallet},
+    lightwallet::{self, data::WalletTx, keys::InMemoryKeys, message::Message, now, LightWallet},
 };
 use futures::future::join_all;
 use json::{array, object, JsonValue};
@@ -643,7 +643,7 @@ impl LightClient {
                         if !all_notes && nd.spent.is_some() {
                             None
                         } else {
-                            let address = LightWallet::note_address(self.config.hrp_sapling_address(), nd);
+                            let address = LightWallet::<()>::note_address(self.config.hrp_sapling_address(), nd);
                             let spendable = address.is_some() &&
                                                     spendable_address.contains(&address.clone().unwrap()) &&
                                                     wtx.block <= anchor_height && nd.spent.is_none() && nd.unconfirmed_spent.is_none();
@@ -759,7 +759,7 @@ impl LightClient {
                 let memo_bytes: MemoBytes = m.memo.clone().into();
                 object! {
                     "to" => encode_payment_address(self.config.hrp_sapling_address(), &m.to),
-                    "memo" => LightWallet::memo_str(Some(m.memo)),
+                    "memo" => LightWallet::<()>::memo_str(Some(m.memo)),
                     "memohex" => hex::encode(memo_bytes.as_slice())
                 }
             }
@@ -805,7 +805,7 @@ impl LightClient {
                             let mut o = object! {
                                 "address" => om.address.clone(),
                                 "value"   => om.value,
-                                "memo"    => LightWallet::memo_str(Some(om.memo.clone()))
+                                "memo"    => LightWallet::<()>::memo_str(Some(om.memo.clone()))
                             };
 
                             if include_memo_hex {
@@ -842,8 +842,8 @@ impl LightClient {
                         "txid"         => format!("{}", v.txid),
                         "amount"       => nd.note.value as i64,
                         "zec_price"    => v.zec_price.map(|p| (p * 100.0).round() / 100.0),
-                        "address"      => LightWallet::note_address(self.config.hrp_sapling_address(), nd),
-                        "memo"         => LightWallet::memo_str(nd.memo.clone())
+                        "address"      => LightWallet::<()>::note_address(self.config.hrp_sapling_address(), nd),
+                        "memo"         => LightWallet::<()>::memo_str(nd.memo.clone())
                     };
 
                     if include_memo_hex {
@@ -1495,9 +1495,13 @@ impl LightClient {
             let prover = LocalTxProver::from_bytes(&sapling_spend, &sapling_output);
 
             self.wallet
-                .send_to_address(branch_id, prover, true, vec![(&addr, tbal - fee, None)], |txbytes| {
-                    GrpcConnector::send_transaction(self.get_server_uri(), txbytes)
-                })
+                .send_to_address(
+                    branch_id,
+                    prover,
+                    true,
+                    vec![(addr.as_str(), tbal - fee, None)],
+                    |txbytes| GrpcConnector::send_transaction(self.get_server_uri(), txbytes),
+                )
                 .await
         };
 

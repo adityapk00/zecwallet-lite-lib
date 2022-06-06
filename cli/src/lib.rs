@@ -231,6 +231,4 @@ pub fn attempt_recover_seed(_password: Option<String>) {
         anchor_offset: [0u32; 5],
         data_dir: None,
     };
-
 }
-

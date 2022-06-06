@@ -1,5 +1,5 @@
+use crate::lightwallet::keys::InMemoryKeys;
 use crate::lightwallet::MemoDownloadOption;
-use crate::lightwallet::keys::Keys;
 use crate::{lightclient::LightClient, lightwallet::utils};
 use json::object;
 use lazy_static::lazy_static;
@@ -796,7 +796,7 @@ impl Command for SendCommand {
                 };
 
                 // Memo has to be None if not sending to a shileded address
-                if memo.is_some() && !Keys::is_shielded_address(&address, &lightclient.config) {
+                if memo.is_some() && !InMemoryKeys::is_shielded_address(&address, &lightclient.config) {
                     return format!("Can't send a memo to the non-shielded address {}", address);
                 }
 
@@ -926,7 +926,7 @@ impl Command for TransactionsCommand {
 
 struct SetOptionCommand {}
 impl Command for SetOptionCommand {
-    fn help(&self) -> String  {
+    fn help(&self) -> String {
         let mut h = vec![];
         h.push("Set a wallet option");
         h.push("Usage:");
@@ -948,7 +948,7 @@ impl Command for SetOptionCommand {
 
         let option = args[0];
         let values: Vec<&str> = option.split("=").collect();
-        
+
         if values.len() != 2 {
             return format!("Error: Please set option value like: <optionname>=<optionvalue>");
         }
@@ -958,30 +958,32 @@ impl Command for SetOptionCommand {
 
         RT.block_on(async move {
             match option_name {
-                "download_memos" => {
-                    match option_value {
-                        "none" => lightclient.wallet.set_download_memo(MemoDownloadOption::NoMemos).await,
-                        "wallet" => lightclient.wallet.set_download_memo(MemoDownloadOption::WalletMemos).await,
-                        "all" => lightclient.wallet.set_download_memo(MemoDownloadOption::AllMemos).await,
-                        _ => return format!("Error: Couldn't understand {} value {}", option_name, option_value),
+                "download_memos" => match option_value {
+                    "none" => lightclient.wallet.set_download_memo(MemoDownloadOption::NoMemos).await,
+                    "wallet" => {
+                        lightclient
+                            .wallet
+                            .set_download_memo(MemoDownloadOption::WalletMemos)
+                            .await
                     }
+                    "all" => lightclient.wallet.set_download_memo(MemoDownloadOption::AllMemos).await,
+                    _ => return format!("Error: Couldn't understand {} value {}", option_name, option_value),
                 },
                 _ => return format!("Error: Couldn't understand {}", option_name),
             }
-    
-            let r = object!{
+
+            let r = object! {
                 "success" => true
             };
-    
+
             r.pretty(2)
         })
     }
 }
 
-
 struct GetOptionCommand {}
 impl Command for GetOptionCommand {
-    fn help(&self) -> String  {
+    fn help(&self) -> String {
         let mut h = vec![];
         h.push("Get a wallet option");
         h.push("Usage:");
@@ -1003,16 +1005,15 @@ impl Command for GetOptionCommand {
 
         RT.block_on(async move {
             let value = match option_name {
-                "download_memos" => 
-                    match lightclient.wallet.wallet_options.read().await.download_memos {
-                        MemoDownloadOption::NoMemos => "none",
-                        MemoDownloadOption::WalletMemos => "wallet",
-                        MemoDownloadOption::AllMemos => "all"
-                    },
+                "download_memos" => match lightclient.wallet.wallet_options.read().await.download_memos {
+                    MemoDownloadOption::NoMemos => "none",
+                    MemoDownloadOption::WalletMemos => "wallet",
+                    MemoDownloadOption::AllMemos => "all",
+                },
                 _ => return format!("Error: Couldn't understand {}", option_name),
             };
 
-            let r = object!{
+            let r = object! {
                 option_name => value
             };
 
@@ -1292,8 +1293,8 @@ pub fn get_commands() -> Box<HashMap<String, Box<dyn Command>>> {
     map.insert("addresses".to_string(), Box::new(AddressCommand {}));
     map.insert("height".to_string(), Box::new(HeightCommand {}));
     map.insert("sendprogress".to_string(), Box::new(SendProgressCommand {}));
-    map.insert("setoption".to_string(), Box::new(SetOptionCommand{}));
-    map.insert("getoption".to_string(), Box::new(GetOptionCommand{}));
+    map.insert("setoption".to_string(), Box::new(SetOptionCommand {}));
+    map.insert("getoption".to_string(), Box::new(GetOptionCommand {}));
     map.insert("import".to_string(), Box::new(ImportCommand {}));
     map.insert("export".to_string(), Box::new(ExportCommand {}));
     map.insert("info".to_string(), Box::new(InfoCommand {}));

@@ -85,8 +85,11 @@ impl WalletTKey {
         let suffix = bytes.split_off(32);
 
         // Assert the suffix
-        if suffix.len() !=1 || suffix[0] != 0x01 {
-            return Err(io::Error::new(ErrorKind::InvalidData, format!("Invalid Suffix: {:?}", suffix)));
+        if suffix.len() != 1 || suffix[0] != 0x01 {
+            return Err(io::Error::new(
+                ErrorKind::InvalidData,
+                format!("Invalid Suffix: {:?}", suffix),
+            ));
         }
 
         let key = SecretKey::from_slice(&bytes).map_err(|e| io::Error::new(ErrorKind::InvalidData, e))?;
@@ -103,11 +106,10 @@ impl WalletTKey {
         })
     }
 
-    pub fn new_hdkey(config: &LightClientConfig, hdkey_num: u32, bip39_seed: &[u8]) -> Self {
+    pub fn new_hdkey(base58_pubkey_addr_prefix: &[u8; 2], hdkey_num: u32, sk: secp256k1::SecretKey) -> Self {
         let pos = hdkey_num;
 
-        let sk = Self::get_taddr_from_bip39seed(&config, bip39_seed, pos);
-        let address = Self::address_from_prefix_sk(&config.base58_pubkey_address(), &sk);
+        let address = Self::address_from_prefix_sk(base58_pubkey_addr_prefix, &sk);
 
         WalletTKey {
             keytype: WalletTKeyType::HdKey,

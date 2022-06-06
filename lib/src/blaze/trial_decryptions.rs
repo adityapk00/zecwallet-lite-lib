@@ -1,20 +1,34 @@
-use crate::{compact_formats::CompactBlock, lightwallet::{MemoDownloadOption, data::WalletTx, keys::Keys, wallet_txns::WalletTxns}};
+use crate::{
+    compact_formats::CompactBlock,
+    lightwallet::{data::WalletTx, keys::InMemoryKeys, wallet_txns::WalletTxns, MemoDownloadOption},
+};
 use futures::{stream::FuturesUnordered, StreamExt};
 use log::info;
 use std::sync::Arc;
-use tokio::{sync::{RwLock, mpsc::{unbounded_channel, UnboundedSender}, oneshot}, task::JoinHandle};
+use tokio::{
+    sync::{
+        mpsc::{unbounded_channel, UnboundedSender},
+        oneshot, RwLock,
+    },
+    task::JoinHandle,
+};
 
-use zcash_primitives::{consensus::BlockHeight, note_encryption::try_sapling_compact_note_decryption, primitives::{Nullifier, SaplingIvk}, transaction::{Transaction, TxId}};
+use zcash_primitives::{
+    consensus::BlockHeight,
+    note_encryption::try_sapling_compact_note_decryption,
+    primitives::{Nullifier, SaplingIvk},
+    transaction::{Transaction, TxId},
+};
 
 use super::syncdata::BlazeSyncData;
 
 pub struct TrialDecryptions {
-    keys: Arc<RwLock<Keys>>,
+    keys: Arc<RwLock<InMemoryKeys>>,
     wallet_txns: Arc<RwLock<WalletTxns>>,
 }
 
 impl TrialDecryptions {
-    pub fn new(keys: Arc<RwLock<Keys>>, wallet_txns: Arc<RwLock<WalletTxns>>) -> Self {
+    pub fn new(keys: Arc<RwLock<InMemoryKeys>>, wallet_txns: Arc<RwLock<WalletTxns>>) -> Self {
         Self { keys, wallet_txns }
     }
 
@@ -89,7 +103,7 @@ impl TrialDecryptions {
 
     async fn trial_decrypt_batch(
         cbs: Vec<CompactBlock>,
-        keys: Arc<RwLock<Keys>>,
+        keys: Arc<RwLock<InMemoryKeys>>,
         bsync_data: Arc<RwLock<BlazeSyncData>>,
         ivks: Arc<Vec<SaplingIvk>>,
         wallet_txns: Arc<RwLock<WalletTxns>>,
@@ -107,7 +121,7 @@ impl TrialDecryptions {
 
             for (tx_num, ctx) in cb.vtx.iter().enumerate() {
                 let mut wallet_tx = false;
-                
+
                 for (output_num, co) in ctx.outputs.iter().enumerate() {
                     let cmu = co.cmu().map_err(|_| "No CMU".to_string())?;
                     let epk = match co.epk() {
@@ -163,7 +177,7 @@ impl TrialDecryptions {
                                 );
 
                                 info!("Trial decrypt Detected txid {}", &txid);
-                                
+
                                 detected_txid_sender
                                     .send((txid, nullifier, height, Some(output_num as u32)))
                                     .unwrap();
@@ -187,7 +201,6 @@ impl TrialDecryptions {
                         // Discard the result, because this was not a wallet tx.
                         rx.await.unwrap().map(|_r| ())
                     }));
-                    
                 }
             }
         }

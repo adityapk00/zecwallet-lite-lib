@@ -1,6 +1,6 @@
 use crate::compact_formats::RawTransaction;
 
-use crate::lightwallet::keys::Keys;
+use crate::lightwallet::keys::InMemoryKeys;
 use std::sync::Arc;
 use tokio::join;
 use tokio::sync::mpsc::unbounded_channel;
@@ -15,11 +15,11 @@ use zcash_primitives::consensus::BlockHeight;
 use zcash_primitives::transaction::Transaction;
 
 pub struct FetchTaddrTxns {
-    keys: Arc<RwLock<Keys>>,
+    keys: Arc<RwLock<InMemoryKeys>>,
 }
 
 impl FetchTaddrTxns {
-    pub fn new(keys: Arc<RwLock<Keys>>) -> Self {
+    pub fn new(keys: Arc<RwLock<InMemoryKeys>>) -> Self {
         Self { keys }
     }
 
@@ -149,7 +149,7 @@ mod test {
     use crate::compact_formats::RawTransaction;
     use zcash_primitives::transaction::{Transaction, TransactionData};
 
-    use crate::lightwallet::keys::Keys;
+    use crate::lightwallet::keys::InMemoryKeys;
     use crate::lightwallet::wallettkey::WalletTKey;
 
     use super::FetchTaddrTxns;
@@ -157,7 +157,7 @@ mod test {
     #[tokio::test]
     async fn out_of_order_txns() {
         // 5 t addresses
-        let mut keys = Keys::new_empty();
+        let mut keys = InMemoryKeys::new_empty();
         let gened_taddrs: Vec<_> = (0..5).into_iter().map(|n| format!("taddr{}", n)).collect();
         keys.tkeys = gened_taddrs.iter().map(|ta| WalletTKey::empty(ta)).collect::<Vec<_>>();
 

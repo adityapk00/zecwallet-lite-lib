@@ -2,7 +2,7 @@ use crate::{
     lightclient::lightclient_config::LightClientConfig,
     lightwallet::{
         data::OutgoingTxMetadata,
-        keys::{Keys, ToBase58Check},
+        keys::{InMemoryKeys, ToBase58Check},
         wallet_txns::WalletTxns,
     },
 };
@@ -39,12 +39,16 @@ use super::syncdata::BlazeSyncData;
 
 pub struct FetchFullTxns {
     config: LightClientConfig,
-    keys: Arc<RwLock<Keys>>,
+    keys: Arc<RwLock<InMemoryKeys>>,
     wallet_txns: Arc<RwLock<WalletTxns>>,
 }
 
 impl FetchFullTxns {
-    pub fn new(config: &LightClientConfig, keys: Arc<RwLock<Keys>>, wallet_txns: Arc<RwLock<WalletTxns>>) -> Self {
+    pub fn new(
+        config: &LightClientConfig,
+        keys: Arc<RwLock<InMemoryKeys>>,
+        wallet_txns: Arc<RwLock<WalletTxns>>,
+    ) -> Self {
         Self {
             config: config.clone(),
             keys,
@@ -154,7 +158,7 @@ impl FetchFullTxns {
         height: BlockHeight,
         unconfirmed: bool,
         block_time: u32,
-        keys: Arc<RwLock<Keys>>,
+        keys: Arc<RwLock<InMemoryKeys>>,
         wallet_txns: Arc<RwLock<WalletTxns>>,
         price: Option<f64>,
     ) {
