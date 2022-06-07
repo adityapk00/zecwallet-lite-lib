@@ -46,7 +46,7 @@ jubjub = "0.9.0"
 bls12_381 = "0.7"
 group = "0.12"
 
-rust-embed = { version = "5.1.0", features = ["debug-embed"] }
+rust-embed = { version = "6.3.0", features = ["debug-embed"] }
 
 zcash_primitives = { git = "https://github.com/adityapk00/librustzcash", rev = "7183acd2fe12ebf201cae5b871166e356273c481", features = ["transparent-inputs"] }
 # zcash_primitives = { path = "../../librustzcash/zcash_primitives", features = ["transparent-inputs"] }
