@@ -1121,11 +1121,10 @@ impl LightWallet<InMemoryKeys> {
             None => return Err("No blocks in wallet to target, please sync first".to_string()),
         };
 
-        let mut keys = self.keys.write().await;
         // Create a map from address -> sk for all taddrs, so we can spend from the
         // right address
-        let address_to_sk = keys.get_taddr_to_sk_map();
-        let mut builder = keys.txbuilder(target_height).unwrap();
+        let address_to_sk = self.keys.read().await.get_taddr_to_sk_map();
+        let first_zkey = self.keys.read().await.zkeys[0].clone();
 
         let (notes, utxos, selected_value) = self.select_notes_and_utxos(target_amount, transparent_only, true).await;
         if selected_value < target_amount {
@@ -1144,6 +1143,9 @@ impl LightWallet<InMemoryKeys> {
             notes.len(),
             utxos.len()
         );
+
+        let mut keys = self.keys.write().await;
+        let mut builder = keys.txbuilder(target_height).unwrap();
 
         let secp = secp256k1::Secp256k1::signing_only();
         // Add all tinputs
@@ -1198,14 +1200,11 @@ impl LightWallet<InMemoryKeys> {
         // send the change to our sapling address manually. Note that if a sapling note was spent,
         // the builder will automatically send change to that address
         if notes.len() == 0 {
-            builder.send_change_to(
-                self.keys.read().await.zkeys[0].extfvk.fvk.ovk,
-                self.keys.read().await.zkeys[0].zaddress.clone(),
-            );
+            builder.send_change_to(first_zkey.extfvk.fvk.ovk, first_zkey.zaddress.clone());
         }
 
         // We'll use the first ovk to encrypt outgoing Txns
-        let ovk = self.keys.read().await.zkeys[0].extfvk.fvk.ovk;
+        let ovk = first_zkey.extfvk.fvk.ovk;
         let mut total_z_recepients = 0u32;
         for (to, value, memo) in recepients {
             // Compute memo if it exists
@@ -1265,7 +1264,11 @@ impl LightWallet<InMemoryKeys> {
             .build(BranchId::try_from(consensus_branch_id).unwrap(), &prover, Some(tx))
             .await
         {
-            Ok(res) => res,
+            Ok(res) => {
+                //stop holding a WriteGuard to the keys
+                std::mem::drop(keys);
+                res
+            }
             Err(e) => {
                 let e = format!("Error creating transaction: {:?}", e);
                 error!("{}", e);

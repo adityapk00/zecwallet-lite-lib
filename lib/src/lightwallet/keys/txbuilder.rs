@@ -172,7 +172,7 @@ impl<'a, P: Parameters + Send + Sync> Builder for InMemoryBuilder<'a, P> {
         let progress = if let Some(progress) = progress {
             //wrap given channel with the one expected by the builder
             let (tx, rx) = std::sync::mpsc::channel();
-            tokio::task::spawn_blocking(|| async move {
+            tokio::task::spawn_blocking(move || {
                 while let Ok(num) = rx.recv() {
                     let progress = progress.clone();
                     let _ = tokio::spawn(async move { progress.send(num as usize).await });
