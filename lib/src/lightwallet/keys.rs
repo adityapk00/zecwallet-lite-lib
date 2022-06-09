@@ -4,9 +4,13 @@ use base58::{FromBase58, ToBase58};
 use ripemd160::Digest;
 use sha2::Sha256;
 use zcash_primitives::{
+    consensus::BlockHeight,
     primitives::PaymentAddress,
-    zip32::{ChildIndex, ExtendedFullViewingKey, ExtendedSpendingKey},
+    zip32::{ChildIndex, ExtendedSpendingKey},
 };
+
+mod txbuilder;
+pub use txbuilder::{Builder, InMemoryBuilder};
 
 /// Sha256(Sha256(value))
 pub fn double_sha256(payload: &[u8]) -> Vec<u8> {
@@ -66,8 +70,23 @@ impl FromBase58Check for str {
     }
 }
 
+//GAT workaround, see:
+// https://sabrinajewson.org/blog/the-better-alternative-to-lifetime-gats#the-better-gats
+mod sealed {
+    pub trait Sealed: Sized {}
+    pub struct Bounds<T>(T);
+    impl<T> Sealed for Bounds<T> {}
+}
+
+pub trait KeystoreBuilderLifetime<'this, ImplicitBounds: sealed::Sealed = sealed::Bounds<&'this Self>> {
+    type Builder: txbuilder::Builder;
+}
+
 #[async_trait::async_trait]
-pub trait Keystore {
+pub trait Keystore
+where
+    Self: for<'this> KeystoreBuilderLifetime<'this>,
+{
     type Error;
 
     /// Retrieve the unshielded public key for a given path
@@ -75,6 +94,12 @@ pub trait Keystore {
 
     /// Retrieve the shielded payment address for a given path
     async fn get_z_payment_address(&self, path: &[ChildIndex]) -> Result<PaymentAddress, Self::Error>;
+
+    /// Retrieve an initialized builder for the current keystore
+    fn txbuilder(
+        &mut self,
+        target_height: BlockHeight,
+    ) -> Result<<Self as KeystoreBuilderLifetime<'_>>::Builder, Self::Error>;
 }
 
 #[async_trait::async_trait]

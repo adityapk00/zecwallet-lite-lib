@@ -3,7 +3,8 @@ use std::{
     io::{self, Error, ErrorKind, Read, Write},
 };
 
-use bip39::{Language, Mnemonic, Seed};
+use bip39::Seed;
+use bip39::{Language, Mnemonic};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use rand::{rngs::OsRng, Rng};
 use sodiumoxide::crypto::secretbox;
@@ -12,6 +13,7 @@ use zcash_client_backend::{
     encoding::{encode_extended_full_viewing_key, encode_extended_spending_key, encode_payment_address},
 };
 use zcash_primitives::{
+    consensus::{BlockHeight, Network},
     legacy::TransparentAddress,
     primitives::PaymentAddress,
     serialize::Vector,
@@ -21,12 +23,14 @@ use zcash_primitives::{
 use crate::{
     lightclient::lightclient_config::{LightClientConfig, GAP_RULE_UNUSED_ADDRESSES},
     lightwallet::{
-        keys::{double_sha256, InsecureKeystore, Keystore, ToBase58Check},
+        keys::{double_sha256, InMemoryBuilder, InsecureKeystore, Keystore, ToBase58Check},
         utils,
         wallettkey::{WalletTKey, WalletTKeyType},
         walletzkey::{WalletZKey, WalletZKeyType},
     },
 };
+
+use super::KeystoreBuilderLifetime;
 
 // Manages all the keys in the wallet. Note that the RwLock for this is present in `lightwallet.rs`, so we'll
 // assume that this is already gone through a RwLock, so we don't lock any of the individual fields.
@@ -382,6 +386,14 @@ impl InMemoryKeys {
             .find(|zk| zk.extfvk == *extfvk)
             .map(|zk| zk.have_spending_key())
             .unwrap_or(false)
+    }
+
+    pub fn get_extsk_for_address(&self, zaddress: &PaymentAddress) -> Option<ExtendedSpendingKey> {
+        self.zkeys
+            .iter()
+            .find(|zk| &zk.zaddress == zaddress)
+            .map(|zk| zk.extsk.clone())
+            .flatten()
     }
 
     pub fn get_extsk_for_extfvk(&self, extfvk: &ExtendedFullViewingKey) -> Option<ExtendedSpendingKey> {
@@ -829,6 +841,10 @@ impl InsecureKeystore for InMemoryKeys {
     }
 }
 
+impl<'this> KeystoreBuilderLifetime<'this> for InMemoryKeys {
+    type Builder = InMemoryBuilder<'this, Network>;
+}
+
 #[async_trait::async_trait]
 impl Keystore for InMemoryKeys {
     type Error = InMemoryKeysError;
@@ -848,5 +864,12 @@ impl Keystore for InMemoryKeys {
                 .map(|tuple| tuple.1)
                 .map_err(|_| InMemoryKeysError::UnableToGetDefaultZAddr)
         })
+    }
+
+    fn txbuilder(
+        &mut self,
+        target_height: BlockHeight,
+    ) -> Result<<Self as KeystoreBuilderLifetime<'_>>::Builder, Self::Error> {
+        Ok(InMemoryBuilder::new(self.config.get_params(), target_height, self))
     }
 }

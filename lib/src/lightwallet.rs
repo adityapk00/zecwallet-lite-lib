@@ -1,5 +1,6 @@
 use crate::compact_formats::TreeState;
 use crate::lightwallet::data::WalletTx;
+use crate::lightwallet::keys::{Builder, Keystore};
 use crate::lightwallet::wallettkey::WalletTKey;
 use crate::{
     blaze::fetch_full_tx::FetchFullTxns,
@@ -32,10 +33,7 @@ use zcash_primitives::{
     memo::Memo,
     prover::TxProver,
     serialize::Vector,
-    transaction::{
-        builder::Builder,
-        components::{amount::DEFAULT_FEE, Amount, OutPoint, TxOut},
-    },
+    transaction::components::{amount::DEFAULT_FEE, Amount, OutPoint, TxOut},
     zip32::ExtendedFullViewingKey,
 };
 
@@ -1036,7 +1034,7 @@ impl LightWallet<InMemoryKeys> {
         None
     }
 
-    pub async fn send_to_address<F, Fut, P: TxProver>(
+    pub async fn send_to_address<F, Fut, P: TxProver + Send + Sync>(
         &self,
         consensus_branch_id: u32,
         prover: P,
@@ -1067,7 +1065,7 @@ impl LightWallet<InMemoryKeys> {
         }
     }
 
-    async fn send_to_address_internal<F, Fut, P: TxProver>(
+    async fn send_to_address_internal<F, Fut, P: TxProver + Send + Sync>(
         &self,
         consensus_branch_id: u32,
         prover: P,
@@ -1123,11 +1121,11 @@ impl LightWallet<InMemoryKeys> {
             None => return Err("No blocks in wallet to target, please sync first".to_string()),
         };
 
-        let mut builder = Builder::new(self.config.get_params().clone(), target_height);
-
+        let mut keys = self.keys.write().await;
         // Create a map from address -> sk for all taddrs, so we can spend from the
         // right address
-        let address_to_sk = self.keys.read().await.get_taddr_to_sk_map();
+        let address_to_sk = keys.get_taddr_to_sk_map();
+        let mut builder = keys.txbuilder(target_height).unwrap();
 
         let (notes, utxos, selected_value) = self.select_notes_and_utxos(target_amount, transparent_only, true).await;
         if selected_value < target_amount {
@@ -1147,6 +1145,7 @@ impl LightWallet<InMemoryKeys> {
             utxos.len()
         );
 
+        let secp = secp256k1::Secp256k1::signing_only();
         // Add all tinputs
         utxos
             .iter()
@@ -1158,8 +1157,14 @@ impl LightWallet<InMemoryKeys> {
                     script_pubkey: Script { 0: utxo.script.clone() },
                 };
 
-                match address_to_sk.get(&utxo.address) {
-                    Some(sk) => builder.add_transparent_input(*sk, outpoint.clone(), coin.clone()),
+                match address_to_sk
+                    .get(&utxo.address)
+                    .map(|sk| secp256k1::PublicKey::from_secret_key(&secp, sk))
+                {
+                    Some(pk) => builder
+                        .add_transparent_input(pk, outpoint.clone(), coin.clone())
+                        .map(|_| ())
+                        .map_err(|_| zcash_primitives::transaction::builder::Error::InvalidAddress),
                     None => {
                         // Something is very wrong
                         let e = format!("Couldn't find the secreykey for taddr {}", utxo.address);
@@ -1173,8 +1178,12 @@ impl LightWallet<InMemoryKeys> {
             .map_err(|e| format!("{:?}", e))?;
 
         for selected in notes.iter() {
+            let payment_addr = ExtendedFullViewingKey::from(&selected.extsk)
+                .address(zcash_primitives::zip32::DiversifierIndex(selected.diversifier.0))
+                .map_err(|_| format!("Error: couldn't compute payment address of selected utxo"))?
+                .1;
             if let Err(e) = builder.add_sapling_spend(
-                selected.extsk.clone(),
+                payment_addr,
                 selected.diversifier,
                 selected.note.clone(),
                 selected.witness.path().unwrap(),
@@ -1231,21 +1240,14 @@ impl LightWallet<InMemoryKeys> {
         }
 
         // Set up a channel to recieve updates on the progress of building the transaction.
-        let (tx, rx) = channel::<u32>();
+        let (tx, rx) = tokio::sync::mpsc::channel(10);
         let progress = self.send_progress.clone();
 
-        // Use a separate thread to handle sending from std::mpsc to tokio::sync::mpsc
-        let (tx2, mut rx2) = tokio::sync::mpsc::unbounded_channel();
-        std::thread::spawn(move || {
-            while let Ok(r) = rx.recv() {
-                tx2.send(r).unwrap();
-            }
-        });
-
         let progress_handle = tokio::spawn(async move {
-            while let Some(r) = rx2.recv().await {
+            futures::pin_mut!(rx);
+            while let Some(r) = rx.recv().await {
                 println!("Progress: {}", r);
-                progress.write().await.progress = r;
+                progress.write().await.progress = r as u32;
             }
 
             progress.write().await.is_send_in_progress = false;
@@ -1259,11 +1261,10 @@ impl LightWallet<InMemoryKeys> {
         }
 
         println!("{}: Building transaction", now() - start_time);
-        let (tx, _) = match builder.build_with_progress_notifier(
-            BranchId::try_from(consensus_branch_id).unwrap(),
-            &prover,
-            Some(tx),
-        ) {
+        let (tx, _) = match builder
+            .build(BranchId::try_from(consensus_branch_id).unwrap(), &prover, Some(tx))
+            .await
+        {
             Ok(res) => res,
             Err(e) => {
                 let e = format!("Error creating transaction: {:?}", e);

@@ -8,7 +8,7 @@ use crate::{
     compact_formats::RawTransaction,
     grpc_connector::GrpcConnector,
     lightclient::lightclient_config::MAX_REORG,
-    lightwallet::{self, data::WalletTx, keys::InMemoryKeys, message::Message, now, LightWallet},
+    lightwallet::{self, data::WalletTx, message::Message, now, LightWallet},
 };
 use futures::future::join_all;
 use json::{array, object, JsonValue};
