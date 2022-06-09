@@ -1180,15 +1180,8 @@ impl LightWallet<InMemoryKeys> {
             .map_err(|e| format!("{:?}", e))?;
 
         for selected in notes.iter() {
-            //pass the default address to lookup this extsk
-            let payment_addr = selected
-                .extsk
-                .default_address()
-                .map_err(|_| format!("Error: couldn't compute payment address of selected utxo"))?
-                .1;
-
             if let Err(e) = builder.add_sapling_spend(
-                payment_addr,
+                &ExtendedFullViewingKey::from(&selected.extsk).fvk.vk,
                 selected.diversifier,
                 selected.note.clone(),
                 selected.witness.path().unwrap(),

@@ -7,7 +7,7 @@ use zcash_primitives::{
     legacy::TransparentAddress,
     memo::MemoBytes,
     merkle_tree::MerklePath,
-    primitives::{Diversifier, Note, PaymentAddress},
+    primitives::{Diversifier, Note, PaymentAddress, ViewingKey},
     prover::TxProver,
     sapling::Node,
     transaction::{
@@ -29,9 +29,7 @@ pub trait Builder {
 
     fn add_sapling_spend(
         &mut self,
-        //TODO: change to proper equivalent of a PublicKey for the ExtendedSpendingKey
-        // so we can uniquely identify the necessary key
-        from: PaymentAddress,
+        key: &ViewingKey,
         diversifier: Diversifier,
         note: Note,
         merkle_path: MerklePath<Node>,
@@ -98,14 +96,19 @@ impl<'a, P: Parameters + Send + Sync> Builder for InMemoryBuilder<'a, P> {
 
     fn add_sapling_spend(
         &mut self,
-        from: PaymentAddress,
+        key: &ViewingKey,
         diversifier: Diversifier,
         note: Note,
         merkle_path: MerklePath<Node>,
     ) -> Result<&mut Self, Self::Error> {
+        let key = key.ivk().to_repr();
         let key = self
             .keystore
-            .get_extsk_for_address(&from)
+            .zkeys
+            .iter()
+            .find(|zk| zk.extfvk.fvk.vk.ivk().to_repr() == key)
+            .map(|zk| zk.extsk.clone())
+            .flatten()
             .ok_or(BuilderError::NoAssociatedSpendingKey)?;
 
         self.inner.add_sapling_spend(key, diversifier, note, merkle_path)?;
