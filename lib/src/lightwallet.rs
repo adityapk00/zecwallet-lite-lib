@@ -31,7 +31,6 @@ use zcash_primitives::{
     consensus::{BlockHeight, BranchId},
     legacy::Script,
     memo::Memo,
-    prover::TxProver,
     serialize::Vector,
     transaction::components::{amount::DEFAULT_FEE, Amount, OutPoint, TxOut},
     zip32::ExtendedFullViewingKey,
@@ -39,7 +38,7 @@ use zcash_primitives::{
 
 use self::{
     data::{BlockData, SaplingNoteData, Utxo, WalletZecPriceInfo},
-    keys::InMemoryKeys,
+    keys::{InMemoryKeys, TxProver},
     message::Message,
     wallet_txns::WalletTxns,
 };

@@ -485,3 +485,65 @@ impl TxProver for FakeTxProver {
         Signature::read(&fake_bytes[..]).map_err(|_e| ())
     }
 }
+
+#[cfg(feature = "hsm-compat")]
+impl zcash_hsmbuilder::txprover::HsmTxProver for FakeTxProver {
+    type SaplingProvingContext = <Self as TxProver>::SaplingProvingContext;
+
+    fn new_sapling_proving_context(&self) -> Self::SaplingProvingContext {
+        TxProver::new_sapling_proving_context(self)
+    }
+
+    fn spend_proof(
+        &self,
+        ctx: &mut Self::SaplingProvingContext,
+        proof_generation_key: ProofGenerationKey,
+        diversifier: Diversifier,
+        rseed: Rseed,
+        ar: jubjub::Fr,
+        value: u64,
+        anchor: bls12_381::Scalar,
+        merkle_path: MerklePath<Node>,
+        _: jubjub::Fr,
+    ) -> Result<
+        (
+            [u8; GROTH_PROOF_SIZE],
+            jubjub::ExtendedPoint,
+            zcash_primitives::redjubjub::PublicKey,
+        ),
+        (),
+    > {
+        TxProver::spend_proof(
+            self,
+            ctx,
+            proof_generation_key,
+            diversifier,
+            rseed,
+            ar,
+            value,
+            anchor,
+            merkle_path,
+        )
+    }
+
+    fn output_proof(
+        &self,
+        ctx: &mut Self::SaplingProvingContext,
+        esk: jubjub::Fr,
+        payment_address: PaymentAddress,
+        rcm: jubjub::Fr,
+        value: u64,
+        _: jubjub::Fr,
+    ) -> ([u8; GROTH_PROOF_SIZE], jubjub::ExtendedPoint) {
+        TxProver::output_proof(self, ctx, esk, payment_address, rcm, value)
+    }
+
+    fn binding_sig(
+        &self,
+        ctx: &mut Self::SaplingProvingContext,
+        value_balance: Amount,
+        sighash: &[u8; 32],
+    ) -> Result<Signature, ()> {
+        TxProver::binding_sig(self, ctx, value_balance, sighash)
+    }
+}

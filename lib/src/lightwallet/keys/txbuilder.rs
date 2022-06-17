@@ -8,7 +8,6 @@ use zcash_primitives::{
     memo::MemoBytes,
     merkle_tree::MerklePath,
     primitives::{Diversifier, Note, PaymentAddress, ViewingKey},
-    prover::TxProver,
     sapling::Node,
     transaction::{
         builder::{Builder as ZBuilder, Error as ZBuilderError, TransactionMetadata},
@@ -16,6 +15,28 @@ use zcash_primitives::{
         Transaction,
     },
 };
+
+cfg_if::cfg_if! {
+    if #[cfg(feature = "hsm-compat")] {
+        mod txprover_trait {
+            use zcash_primitives::prover::TxProver;
+            use zcash_hsmbuilder::txprover::HsmTxProver;
+
+            /// This trait is a marker trait used to identify tx provers
+            /// that are HSM compatible as well as normal tx provers
+            ///
+            /// Automatically implemented by a type if the constraits are satisfied
+            /// via blanket impl
+            pub trait BothTxProver: TxProver + HsmTxProver {}
+
+            impl<T: TxProver + HsmTxProver> BothTxProver for T {}
+        }
+
+        pub use txprover_trait::BothTxProver as TxProver;
+    } else {
+        pub use zcash_primitives::prover::TxProver;
+    }
+}
 
 use super::InMemoryKeys;
 

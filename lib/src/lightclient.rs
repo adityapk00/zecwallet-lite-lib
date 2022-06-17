@@ -36,7 +36,14 @@ use zcash_primitives::{
     memo::{Memo, MemoBytes},
     transaction::{components::amount::DEFAULT_FEE, Transaction, TxId},
 };
-use zcash_proofs::prover::LocalTxProver;
+
+cfg_if::cfg_if! {
+    if #[cfg(feature = "hsm-compat")] {
+        use zcash_hsmbuilder::txprover::LocalTxProver;
+    } else {
+        use zcash_proofs::prover::LocalTxProver;
+    }
+}
 
 pub(crate) mod checkpoints;
 pub mod lightclient_config;
