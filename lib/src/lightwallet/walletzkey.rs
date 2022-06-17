@@ -13,7 +13,7 @@ use zcash_primitives::{
 
 use crate::lightclient::lightclient_config::LightClientConfig;
 
-use super::keys::Keys;
+use super::keys::InMemoryKeys;
 
 #[derive(PartialEq, Debug, Clone)]
 pub enum WalletZKeyType {
@@ -205,7 +205,7 @@ impl WalletZKey {
         match self.keytype {
             WalletZKeyType::HdKey => {
                 let (extsk, extfvk, address) =
-                    Keys::get_zaddr_from_bip39seed(&config, &bip39_seed, self.hdkey_num.unwrap());
+                    InMemoryKeys::get_zaddr_from_bip39seed(&config, &bip39_seed, self.hdkey_num.unwrap());
 
                 if address != self.zaddress {
                     return Err(io::Error::new(

@@ -49,7 +49,7 @@ impl BlazeSyncData {
             .write()
             .await
             .new_sync_batch(start_block, end_block, batch_num);
-        
+
         self.wallet_options = wallet_options;
 
         self.block_data.setup_sync(existing_blocks, verified_tree).await;
