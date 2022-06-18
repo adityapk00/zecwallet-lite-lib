@@ -120,3 +120,8 @@ pub trait CachingKeysManager {}
 
 mod in_memory;
 pub use in_memory::InMemoryKeys;
+
+#[cfg(feature = "ledger-support")]
+mod ledger;
+#[cfg(feature = "ledger-support")]
+pub use ledger::LedgerKeystore;

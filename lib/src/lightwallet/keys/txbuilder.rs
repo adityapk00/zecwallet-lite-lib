@@ -10,7 +10,7 @@ use zcash_primitives::{
     primitives::{Diversifier, Note, PaymentAddress, ViewingKey},
     sapling::Node,
     transaction::{
-        builder::{Builder as ZBuilder, Error as ZBuilderError, TransactionMetadata},
+        builder::{Builder as ZBuilder, Error as ZBuilderError},
         components::{Amount, OutPoint, TxOut},
         Transaction,
     },
@@ -33,8 +33,10 @@ cfg_if::cfg_if! {
         }
 
         pub use txprover_trait::BothTxProver as TxProver;
+        pub use zcash_hsmbuilder::txbuilder::TransactionMetadata;
     } else {
         pub use zcash_primitives::prover::TxProver;
+        pub use zcash_primitives::transaction::builder::TransactionMetadata;
     }
 }
 
@@ -210,6 +212,7 @@ impl<'a, P: Parameters + Send + Sync> Builder for InMemoryBuilder<'a, P> {
 
         self.inner
             .build_with_progress_notifier(consensus_branch_id, prover, progress)
+            .map(|(tx, meta)| (tx, meta.into()))
             .map_err(Into::into)
     }
 }

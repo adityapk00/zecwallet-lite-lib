@@ -9,7 +9,8 @@ edition = "2018"
 [features]
 default = ["embed_params", "ledger-support"]
 hsm-compat = ["zcash-hsmbuilder"]
-ledger-support = ["hsm-compat", "ledger-zcash", "ledger-transport-hid"]
+ledger-support = ["hsm-compat", "ledger-zcash", "ledger-transport-hid",
+                    "ledger-transport", "zx-bip44", "bytemuck"]
 embed_params = []
 
 [dependencies]
@@ -59,6 +60,9 @@ zcash_proofs = { git = "https://github.com/adityapk00/librustzcash", rev = "adeb
 zcash-hsmbuilder = { version = "0.3", default-features = false, features = ["zecwallet-compat"], optional = true }
 ledger-zcash = { version = "0.5", default-features = false, features = ["zecwallet-compat"], optional = true }
 ledger-transport-hid = { version = "0.9", optional = true }
+ledger-transport = { version = "0.9.0", optional = true }
+zx-bip44 = { version = "0.1.0", optional = true }
+bytemuck = { version = "1.9.1", optional = true }
 
 [dev-dependencies]
 portpicker = "0.1.0"
