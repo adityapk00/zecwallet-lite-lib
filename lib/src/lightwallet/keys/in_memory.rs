@@ -3,7 +3,6 @@ use std::{
     io::{self, Error, ErrorKind, Read, Write},
 };
 
-use bip39::Seed;
 use bip39::{Language, Mnemonic};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use rand::{rngs::OsRng, Rng};
@@ -23,14 +22,15 @@ use zcash_primitives::{
 use crate::{
     lightclient::lightclient_config::{LightClientConfig, GAP_RULE_UNUSED_ADDRESSES},
     lightwallet::{
-        keys::{double_sha256, InMemoryBuilder, InsecureKeystore, Keystore, ToBase58Check},
+        keys::{double_sha256, InsecureKeystore, Keystore, KeystoreBuilderLifetime, ToBase58Check},
         utils,
         wallettkey::{WalletTKey, WalletTKeyType},
         walletzkey::{WalletZKey, WalletZKeyType},
     },
 };
 
-use super::KeystoreBuilderLifetime;
+mod builder;
+pub use builder::{BuilderError as InMemoryBuilderError, InMemoryBuilder};
 
 // Manages all the keys in the wallet. Note that the RwLock for this is present in `lightwallet.rs`, so we'll
 // assume that this is already gone through a RwLock, so we don't lock any of the individual fields.
@@ -408,6 +408,20 @@ impl InMemoryKeys {
         self.tkeys
             .iter()
             .map(|tk| (tk.address.clone(), tk.key.unwrap().clone()))
+            .collect()
+    }
+
+    pub fn get_taddr_to_key_map(&self) -> HashMap<String, secp256k1::PublicKey> {
+        let secp = secp256k1::Secp256k1::signing_only();
+
+        self.tkeys
+            .iter()
+            .map(|tk| {
+                (
+                    tk.address.clone(),
+                    secp256k1::PublicKey::from_secret_key(&secp, &tk.key.unwrap()),
+                )
+            })
             .collect()
     }
 

@@ -10,7 +10,9 @@ use zcash_primitives::{
 };
 
 mod txbuilder;
-pub use txbuilder::{Builder, InMemoryBuilder, TransactionMetadata, TxProver};
+pub use txbuilder::{Builder, TransactionMetadata, TxProver};
+
+pub use in_memory::InMemoryBuilder;
 
 /// Sha256(Sha256(value))
 pub fn double_sha256(payload: &[u8]) -> Vec<u8> {
@@ -125,3 +127,6 @@ pub use in_memory::InMemoryKeys;
 mod ledger;
 #[cfg(feature = "ledger-support")]
 pub use ledger::LedgerKeystore;
+
+mod adapters;
+pub use adapters::*;

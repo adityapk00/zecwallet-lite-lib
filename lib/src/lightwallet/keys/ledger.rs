@@ -26,7 +26,7 @@ use zcash_primitives::{
 };
 use zx_bip44::BIP44Path;
 
-use crate::lightclient::lightclient_config::LightClientConfig;
+use crate::{lightclient::lightclient_config::LightClientConfig, lightwallet::utils::compute_taddr};
 
 use super::{Builder, Keystore, KeystoreBuilderLifetime, TransactionMetadata, TxProver};
 
@@ -57,6 +57,8 @@ pub struct LedgerKeystore {
     app: ZcashApp<TransportNativeHID>,
     transparent_addrs: RwLock<HashMap<[u32; 5], SecpPublicKey>>,
 
+    //the first shielded key path in the keystore
+    first_shielded: RwLock<Option<[u32; 3]>>,
     //associated a path with an ivk and the default diversifier
     shielded_addrs: RwLock<HashMap<[u32; 3], (SaplingIvk, Diversifier)>>,
 }
@@ -72,6 +74,7 @@ impl LedgerKeystore {
             app,
             config,
             transparent_addrs: Default::default(),
+            first_shielded: Default::default(),
             shielded_addrs: Default::default(),
         })
     }
@@ -123,6 +126,48 @@ impl LedgerKeystore {
                 index.increment().map_err(|_| LedgerError::DiversifierIndexOverflow)?;
             }
         }
+    }
+
+    /// Retrieve all the cached/known IVKs
+    pub async fn get_all_ivks(&self) -> impl Iterator<Item = SaplingIvk> {
+        let guard = self.shielded_addrs.read().await;
+
+        guard
+            .values()
+            .map(|(ivk, _)| SaplingIvk(ivk.0.clone()))
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
+
+    /// Retrieve a HashMap of transparent addresses to public key
+    pub async fn taddr_to_key_map(&self) -> HashMap<String, SecpPublicKey> {
+        self.transparent_addrs
+            .read()
+            .await
+            .values()
+            .map(|key| {
+                (
+                    compute_taddr(key, &self.config.base58_pubkey_address(), &[]),
+                    key.clone(),
+                )
+            })
+            .collect()
+    }
+
+    async fn is_first_shielded_set(&self) -> bool {
+        self.first_shielded.read().await.is_some()
+    }
+
+    /// Retrieve the first shielded key present in the keystore
+    pub async fn first_shielded(&self) -> Option<[u32; 3]> {
+        self.first_shielded.read().await.clone()
+    }
+
+    /// Retrieve the OVK of a given path
+    pub async fn get_ovk_of(&self, path: &[u32; 3]) -> Result<OutgoingViewingKey, LedgerError> {
+        let ovk = self.app.get_ovk(path[2]).await?;
+
+        Ok(OutgoingViewingKey(ovk.0))
     }
 }
 
@@ -177,6 +222,12 @@ impl Keystore for LedgerKeystore {
                 let ivk = self.app.get_ivk(path[2]).await.map(|ivk| SaplingIvk(ivk))?;
 
                 let div = self.get_default_div(path[2]).await?;
+
+                //if the first address isn't known set it here
+                if !self.is_first_shielded_set().await {
+                    let guard = self.first_shielded.write().await;
+                    guard.replace(path.clone());
+                }
 
                 let addr = ivk
                     .to_payment_address(div)
