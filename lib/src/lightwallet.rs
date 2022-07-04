@@ -1,6 +1,6 @@
 use crate::compact_formats::TreeState;
 use crate::lightwallet::data::WalletTx;
-use crate::lightwallet::keys::{Builder, Keystore};
+use crate::lightwallet::keys::Builder;
 use crate::lightwallet::wallettkey::WalletTKey;
 use crate::{
     blaze::fetch_full_tx::FetchFullTxns,
@@ -18,7 +18,7 @@ use std::{
     collections::HashMap,
     convert::TryFrom,
     io::{self, Error, ErrorKind, Read, Write},
-    sync::{atomic::AtomicU64, mpsc::channel, Arc},
+    sync::{atomic::AtomicU64, Arc},
     time::SystemTime,
 };
 use tokio::sync::RwLock;
@@ -38,7 +38,7 @@ use zcash_primitives::{
 
 use self::{
     data::{BlockData, SaplingNoteData, Utxo, WalletZecPriceInfo},
-    keys::{InMemoryKeys, TxProver},
+    keys::{InMemoryKeys, Keystores, TxProver},
     message::Message,
     wallet_txns::WalletTxns,
 };
@@ -148,9 +148,9 @@ impl WalletOptions {
     }
 }
 
-pub struct LightWallet<K = InMemoryKeys> {
+pub struct LightWallet {
     // All the keys in the wallet
-    keys: Arc<RwLock<K>>,
+    keys: Arc<RwLock<Keystores>>,
 
     // The block at which this wallet was born. Rescans
     // will start from here.
@@ -178,10 +178,10 @@ pub struct LightWallet<K = InMemoryKeys> {
     pub price: Arc<RwLock<WalletZecPriceInfo>>,
 }
 
-impl<K> LightWallet<K> {
-    pub fn with_keystore(config: LightClientConfig, height: u64, keystore: K) -> Self {
+impl LightWallet {
+    pub fn with_keystore(config: LightClientConfig, height: u64, keystore: impl Into<Keystores>) -> Self {
         Self {
-            keys: Arc::new(RwLock::new(keystore)),
+            keys: Arc::new(RwLock::new(keystore.into())),
             txns: Default::default(),
             blocks: Default::default(),
             wallet_options: Default::default(),
@@ -201,10 +201,6 @@ impl<K> LightWallet<K> {
                 nd.witnesses.top_height = top_height;
             });
         });
-    }
-
-    pub fn keys(&self) -> Arc<RwLock<K>> {
-        self.keys.clone()
     }
 
     pub fn txns(&self) -> Arc<RwLock<WalletTxns>> {
@@ -515,7 +511,29 @@ impl<K> LightWallet<K> {
     }
 }
 
-impl LightWallet<InMemoryKeys> {
+impl LightWallet {
+    pub async fn in_memory_keys<'this>(
+        &'this self,
+    ) -> Result<impl std::ops::Deref<Target = InMemoryKeys> + 'this, io::Error> {
+        let keys = self.keys.read().await;
+        tokio::sync::RwLockReadGuard::try_map(keys, |keys| match keys {
+            Keystores::Memory(keys) => Some(keys),
+            _ => None,
+        })
+        .map_err(|_| io::Error::new(ErrorKind::Unsupported, "incompatible keystore requested"))
+    }
+
+    pub async fn in_memory_keys_mut<'this>(
+        &'this self,
+    ) -> Result<impl std::ops::DerefMut<Target = InMemoryKeys> + 'this, io::Error> {
+        let keys = self.keys.write().await;
+        tokio::sync::RwLockWriteGuard::try_map(keys, |keys| match keys {
+            Keystores::Memory(keys) => Some(keys),
+            _ => None,
+        })
+        .map_err(|_| io::Error::new(ErrorKind::Unsupported, "incompatible keystore requested"))
+    }
+
     pub fn serialized_version() -> u64 {
         return 24;
     }
@@ -530,7 +548,7 @@ impl LightWallet<InMemoryKeys> {
             InMemoryKeys::new(&config, seed_phrase, num_zaddrs).map_err(|e| Error::new(ErrorKind::InvalidData, e))?;
 
         Ok(Self {
-            keys: Arc::new(RwLock::new(keys)),
+            keys: Arc::new(RwLock::new(keys.into())),
             txns: Arc::new(RwLock::new(WalletTxns::new())),
             blocks: Arc::new(RwLock::new(vec![])),
             wallet_options: Arc::new(RwLock::new(WalletOptions::default())),
@@ -628,7 +646,7 @@ impl LightWallet<InMemoryKeys> {
         };
 
         let mut lw = Self {
-            keys: Arc::new(RwLock::new(keys)),
+            keys: Arc::new(RwLock::new(keys.into())),
             txns: Arc::new(RwLock::new(txns)),
             blocks: Arc::new(RwLock::new(blocks)),
             config: config.clone(),
@@ -653,18 +671,23 @@ impl LightWallet<InMemoryKeys> {
     }
 
     pub async fn write<W: Write>(&self, mut writer: W) -> io::Result<()> {
-        if self.keys.read().await.encrypted && self.keys.read().await.unlocked {
-            return Err(Error::new(
-                ErrorKind::InvalidInput,
-                format!("Cannot write while wallet is unlocked while encrypted."),
-            ));
+        {
+            //enclose in scope to avoid holding read lock after these checks
+            let keys = self.in_memory_keys().await?;
+
+            if keys.encrypted && keys.unlocked {
+                return Err(Error::new(
+                    ErrorKind::InvalidInput,
+                    format!("Cannot write while wallet is unlocked while encrypted."),
+                ));
+            }
+
+            // Write the version
+            writer.write_u64::<LittleEndian>(Self::serialized_version())?;
+
+            // Write all the keys
+            keys.write(&mut writer)?;
         }
-
-        // Write the version
-        writer.write_u64::<LittleEndian>(Self::serialized_version())?;
-
-        // Write all the keys
-        self.keys.read().await.write(&mut writer)?;
 
         Vector::write(&mut writer, &self.blocks.read().await, |w, b| b.write(w))?;
 
@@ -722,7 +745,8 @@ impl LightWallet<InMemoryKeys> {
 
         // Start collecting sapling funds at every allowed offset
         for anchor_offset in &self.config.anchor_offset {
-            let keys = self.keys.read().await;
+            let keys = self.in_memory_keys().await.expect("in memory keystore");
+
             let mut candidate_notes = self
                 .txns
                 .read()
@@ -770,18 +794,20 @@ impl LightWallet<InMemoryKeys> {
     }
 
     pub async fn is_unlocked_for_spending(&self) -> bool {
-        self.keys.read().await.is_unlocked_for_spending()
+        match self.in_memory_keys().await {
+            Ok(ks) => ks.is_unlocked_for_spending(),
+            //for now if it's not in-memory just assume it's unlocked
+            //TODO: do appropriate work here for other keystores
+            _ => true,
+        }
     }
 
     pub async fn is_encrypted(&self) -> bool {
-        self.keys.read().await.is_encrypted()
+        //TODO: perhaps to dimilar to `is_unlocked_for_spending`
+        self.in_memory_keys().await.expect("in memory keystore").is_encrypted()
     }
 
     pub async fn add_imported_tk(&self, sk: String) -> String {
-        if self.keys.read().await.encrypted {
-            return "Error: Can't import transparent address key while wallet is encrypted".to_string();
-        }
-
         let sk = match WalletTKey::from_sk_string(&self.config, sk) {
             Err(e) => return format!("Error: {}", e),
             Ok(k) => k,
@@ -789,26 +815,34 @@ impl LightWallet<InMemoryKeys> {
 
         let address = sk.address.clone();
 
-        if self
-            .keys
-            .read()
-            .await
-            .tkeys
-            .iter()
-            .find(|&tk| tk.address == address)
-            .is_some()
-        {
+        let mut keys = match self.in_memory_keys_mut().await {
+            Ok(k) => k,
+            Err(e) => return format!("Error: {}", e),
+        };
+
+        if keys.encrypted {
+            return "Error: Can't import transparent address key while wallet is encrypted".to_string();
+        }
+
+        if keys.tkeys.iter().find(|&tk| tk.address == address).is_some() {
             return "Error: Key already exists".to_string();
         }
 
-        self.keys.write().await.tkeys.push(sk);
+        keys.tkeys.push(sk);
         return address;
     }
 
     // Add a new imported spending key to the wallet
     /// NOTE: This will not rescan the wallet
     pub async fn add_imported_sk(&self, sk: String, birthday: u64) -> String {
-        if self.keys.read().await.encrypted {
+        //we don't need to acquire write access immediately
+        // but in the general case we do want write access
+        let mut keys = match self.in_memory_keys_mut().await {
+            Ok(k) => k,
+            Err(e) => return format!("Error: {}", e),
+        };
+
+        if keys.encrypted {
             return "Error: Can't import spending key while wallet is encrypted".to_string();
         }
 
@@ -820,10 +854,7 @@ impl LightWallet<InMemoryKeys> {
         };
 
         // Make sure the key doesn't already exist
-        if self
-            .keys
-            .read()
-            .await
+        if keys
             .zkeys
             .iter()
             .find(|&wk| wk.extsk.is_some() && wk.extsk.as_ref().unwrap() == &extsk.clone())
@@ -834,7 +865,7 @@ impl LightWallet<InMemoryKeys> {
 
         let extfvk = ExtendedFullViewingKey::from(&extsk);
         let zaddress = {
-            let zkeys = &mut self.keys.write().await.zkeys;
+            let zkeys = &mut keys.zkeys;
             let maybe_existing_zkey = zkeys.iter_mut().find(|wk| wk.extfvk == extfvk);
 
             // If the viewing key exists, and is now being upgraded to the spending key, replace it in-place
@@ -859,7 +890,14 @@ impl LightWallet<InMemoryKeys> {
     // Add a new imported viewing key to the wallet
     /// NOTE: This will not rescan the wallet
     pub async fn add_imported_vk(&self, vk: String, birthday: u64) -> String {
-        if !self.keys().read().await.unlocked {
+        //we don't need to acquire write access immediately
+        // but in the general case we do want write access
+        let mut keys = match self.in_memory_keys_mut().await {
+            Ok(k) => k,
+            Err(e) => return format!("Error: {}", e),
+        };
+
+        if keys.unlocked {
             return "Error: Can't add key while wallet is locked".to_string();
         }
 
@@ -871,20 +909,12 @@ impl LightWallet<InMemoryKeys> {
         };
 
         // Make sure the key doesn't already exist
-        if self
-            .keys()
-            .read()
-            .await
-            .zkeys
-            .iter()
-            .find(|wk| wk.extfvk == extfvk.clone())
-            .is_some()
-        {
+        if keys.zkeys.iter().find(|wk| wk.extfvk == extfvk.clone()).is_some() {
             return "Error: Key already exists".to_string();
         }
 
         let newkey = WalletZKey::new_imported_viewkey(extfvk);
-        self.keys().write().await.zkeys.push(newkey.clone());
+        keys.zkeys.push(newkey.clone());
 
         // Adjust wallet birthday
         self.adjust_wallet_birthday(birthday);
@@ -895,7 +925,7 @@ impl LightWallet<InMemoryKeys> {
     pub async fn unverified_zbalance(&self, addr: Option<String>) -> u64 {
         let anchor_height = self.get_anchor_height().await;
 
-        let keys = self.keys.read().await;
+        let keys = self.in_memory_keys().await.expect("in memory keystore");
 
         self.txns
             .read()
@@ -936,7 +966,7 @@ impl LightWallet<InMemoryKeys> {
     pub async fn spendable_zbalance(&self, addr: Option<String>) -> u64 {
         let anchor_height = self.get_anchor_height().await;
 
-        let keys = self.keys.read().await;
+        let keys = self.in_memory_keys().await.expect("in memory keystore");
 
         self.txns
             .read()
@@ -971,7 +1001,9 @@ impl LightWallet<InMemoryKeys> {
     }
 
     pub async fn remove_unused_taddrs(&self) {
-        let taddrs = self.keys.read().await.get_all_taddrs();
+        let mut keys = self.in_memory_keys_mut().await.expect("in memory keystore");
+
+        let taddrs = keys.get_all_taddrs();
         if taddrs.len() <= 1 {
             return;
         }
@@ -998,12 +1030,14 @@ impl LightWallet<InMemoryKeys> {
 
         if highest_account.unwrap() == 0 {
             // Remove unused addresses
-            self.keys.write().await.tkeys.truncate(1);
+            keys.tkeys.truncate(1);
         }
     }
 
     pub async fn remove_unused_zaddrs(&self) {
-        let zaddrs = self.keys.read().await.get_all_zaddresses();
+        let mut keys = self.in_memory_keys_mut().await.expect("in memory keystore");
+
+        let zaddrs = keys.get_all_zaddresses();
         if zaddrs.len() <= 1 {
             return;
         }
@@ -1029,20 +1063,13 @@ impl LightWallet<InMemoryKeys> {
 
         if highest_account.unwrap() == 0 {
             // Remove unused addresses
-            self.keys().write().await.zkeys.truncate(1);
+            keys.zkeys.truncate(1);
         }
     }
 
     pub async fn decrypt_message(&self, enc: Vec<u8>) -> Option<Message> {
         // Collect all the ivks in the wallet
-        let ivks: Vec<_> = self
-            .keys
-            .read()
-            .await
-            .get_all_extfvks()
-            .iter()
-            .map(|extfvk| extfvk.fvk.vk.ivk())
-            .collect();
+        let ivks = self.keys.read().await.get_all_ivks().await;
 
         // Attempt decryption with all available ivks, one at a time. This is pretty fast, so need need for fancy multithreading
         for ivk in ivks {
@@ -1099,7 +1126,7 @@ impl LightWallet<InMemoryKeys> {
         F: Fn(Box<[u8]>) -> Fut,
         Fut: Future<Output = Result<String, String>>,
     {
-        if !self.keys.read().await.unlocked {
+        if !self.is_unlocked_for_spending().await {
             return Err("Cannot spend while wallet is locked".to_string());
         }
 
@@ -1145,8 +1172,11 @@ impl LightWallet<InMemoryKeys> {
 
         // Create a map from address -> sk for all taddrs, so we can spend from the
         // right address
-        let address_to_sk = self.keys.read().await.get_taddr_to_sk_map();
-        let first_zkey = self.keys.read().await.zkeys[0].clone();
+        let (address_to_key, (first_zkey_ovk, first_zkey_zaddr)) = {
+            let guard = self.keys.read().await;
+            let (map, first) = tokio::join!(guard.get_taddr_to_key_map(), guard.first_zkey());
+            (map, first.expect("no zkey in the keystore"))
+        };
 
         let (notes, utxos, selected_value) = self.select_notes_and_utxos(target_amount, transparent_only, true).await;
         if selected_value < target_amount {
@@ -1167,7 +1197,7 @@ impl LightWallet<InMemoryKeys> {
         );
 
         let mut keys = self.keys.write().await;
-        let mut builder = keys.txbuilder(target_height).unwrap();
+        let mut builder = keys.tx_builder(target_height);
 
         let secp = secp256k1::Secp256k1::signing_only();
         // Add all tinputs
@@ -1181,17 +1211,14 @@ impl LightWallet<InMemoryKeys> {
                     script_pubkey: Script { 0: utxo.script.clone() },
                 };
 
-                match address_to_sk
-                    .get(&utxo.address)
-                    .map(|sk| secp256k1::PublicKey::from_secret_key(&secp, sk))
-                {
+                match address_to_key.get(&utxo.address) {
                     Some(pk) => builder
-                        .add_transparent_input(pk, outpoint.clone(), coin.clone())
+                        .add_transparent_input(*pk, outpoint.clone(), coin.clone())
                         .map(|_| ())
                         .map_err(|_| zcash_primitives::transaction::builder::Error::InvalidAddress),
                     None => {
                         // Something is very wrong
-                        let e = format!("Couldn't find the secreykey for taddr {}", utxo.address);
+                        let e = format!("Couldn't find the key for taddr {}", utxo.address);
                         error!("{}", e);
 
                         Err(zcash_primitives::transaction::builder::Error::InvalidAddress)
@@ -1218,11 +1245,11 @@ impl LightWallet<InMemoryKeys> {
         // send the change to our sapling address manually. Note that if a sapling note was spent,
         // the builder will automatically send change to that address
         if notes.len() == 0 {
-            builder.send_change_to(first_zkey.extfvk.fvk.ovk, first_zkey.zaddress.clone());
+            builder.send_change_to(first_zkey_ovk, first_zkey_zaddr);
         }
 
         // We'll use the first ovk to encrypt outgoing Txns
-        let ovk = first_zkey.extfvk.fvk.ovk;
+        let ovk = first_zkey_ovk;
         let mut total_z_recepients = 0u32;
         for (to, value, memo) in recepients {
             // Compute memo if it exists
@@ -1362,19 +1389,28 @@ impl LightWallet<InMemoryKeys> {
     }
 
     pub async fn encrypt(&self, passwd: String) -> io::Result<()> {
-        self.keys.write().await.encrypt(passwd)
+        self.in_memory_keys_mut()
+            .await
+            .expect("in memory keystore")
+            .encrypt(passwd)
     }
 
     pub async fn lock(&self) -> io::Result<()> {
-        self.keys.write().await.lock()
+        self.in_memory_keys_mut().await.expect("in memory keystore").lock()
     }
 
     pub async fn unlock(&self, passwd: String) -> io::Result<()> {
-        self.keys.write().await.unlock(passwd)
+        self.in_memory_keys_mut()
+            .await
+            .expect("in memory keystore")
+            .unlock(passwd)
     }
 
     pub async fn remove_encryption(&self, passwd: String) -> io::Result<()> {
-        self.keys.write().await.remove_encryption(passwd)
+        self.in_memory_keys_mut()
+            .await
+            .expect("in memory keystore")
+            .remove_encryption(passwd)
     }
 }
 
@@ -1404,7 +1440,13 @@ mod test {
         assert_eq!(lc.wallet.last_scanned_height().await, 10);
 
         // 2. Send an incoming tx to fill the wallet
-        let extfvk1 = lc.wallet.keys().read().await.get_all_extfvks()[0].clone();
+        let extfvk1 = lc
+            .wallet
+            .in_memory_keys()
+            .await
+            .expect("in memory keystore")
+            .get_all_extfvks()[0]
+            .clone();
         let value = 100_000;
         let (tx, _height, _) = fcbl.add_tx_paying(&extfvk1, value);
         mine_pending_blocks(&mut fcbl, &data, &lc).await;
@@ -1479,7 +1521,7 @@ mod test {
         assert_eq!(utxos.len(), 0);
 
         // 4. Get an incoming tx to a t address
-        let sk = lc.wallet.keys().read().await.tkeys[0].clone();
+        let sk = lc.wallet.in_memory_keys().await.expect("in memory kesytore").tkeys[0].clone();
         let pk = sk.pubkey().unwrap();
         let taddr = sk.address;
         let tvalue = 100_000;
@@ -1530,7 +1572,13 @@ mod test {
         assert_eq!(lc.wallet.last_scanned_height().await, 10);
 
         // 2. Send an incoming tx to fill the wallet
-        let extfvk1 = lc.wallet.keys().read().await.get_all_extfvks()[0].clone();
+        let extfvk1 = lc
+            .wallet
+            .in_memory_keys()
+            .await
+            .expect("in memory keystore")
+            .get_all_extfvks()[0]
+            .clone();
         let value1 = 100_000;
         let (tx, _height, _) = fcbl.add_tx_paying(&extfvk1, value1);
         mine_pending_blocks(&mut fcbl, &data, &lc).await;

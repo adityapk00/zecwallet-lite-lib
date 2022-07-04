@@ -375,9 +375,9 @@ impl LightClient {
         // Go over all z addresses
         let z_keys = self
             .wallet
-            .keys()
-            .read()
+            .in_memory_keys()
             .await
+            .expect("in memory keystore")
             .get_z_private_keys()
             .iter()
             .filter(move |(addr, _, _)| address.is_none() || address.as_ref() == Some(addr))
@@ -396,9 +396,9 @@ impl LightClient {
         // Go over all t addresses
         let t_keys = self
             .wallet
-            .keys()
-            .read()
+            .in_memory_keys()
             .await
+            .expect("in memory keystore")
             .get_t_secret_keys()
             .iter()
             .filter(move |(addr, _)| address.is_none() || address.as_ref() == Some(addr))
@@ -419,10 +419,20 @@ impl LightClient {
 
     pub async fn do_address(&self) -> JsonValue {
         // Collect z addresses
-        let z_addresses = self.wallet.keys().read().await.get_all_zaddresses();
+        let z_addresses = self
+            .wallet
+            .in_memory_keys()
+            .await
+            .expect("in memory keystore")
+            .get_all_zaddresses();
 
         // Collect t addresses
-        let t_addresses = self.wallet.keys().read().await.get_all_taddrs();
+        let t_addresses = self
+            .wallet
+            .in_memory_keys()
+            .await
+            .expect("in memory keystore")
+            .get_all_taddrs();
 
         object! {
             "z_addresses" => z_addresses,
@@ -439,7 +449,13 @@ impl LightClient {
     pub async fn do_balance(&self) -> JsonValue {
         // Collect z addresses
         let mut z_addresses = vec![];
-        for zaddress in self.wallet.keys().read().await.get_all_zaddresses() {
+        for zaddress in self
+            .wallet
+            .in_memory_keys()
+            .await
+            .expect("in memory keystore")
+            .get_all_zaddresses()
+        {
             z_addresses.push(object! {
                 "address" => zaddress.clone(),
                 "zbalance" =>self.wallet.zbalance(Some(zaddress.clone())).await,
@@ -451,7 +467,13 @@ impl LightClient {
 
         // Collect t addresses
         let mut t_addresses = vec![];
-        for taddress in self.wallet.keys().read().await.get_all_taddrs() {
+        for taddress in self
+            .wallet
+            .in_memory_keys()
+            .await
+            .expect("in memory keystore")
+            .get_all_taddrs()
+        {
             // Get the balance for this address
             let balance = self.wallet.tbalance(Some(taddress.clone())).await;
 
@@ -618,7 +640,7 @@ impl LightClient {
         }
 
         Ok(object! {
-            "seed"     => self.wallet.keys().read().await.get_seed_phrase(),
+            "seed"     => self.wallet.in_memory_keys().await.expect("in memory keystore").get_seed_phrase(),
             "birthday" => self.wallet.get_birthday().await
         })
     }
@@ -635,9 +657,9 @@ impl LightClient {
             // First, collect all extfvk's that are spendable (i.e., we have the private key)
             let spendable_address: HashSet<String> = self
                 .wallet
-                .keys()
-                .read()
+                .in_memory_keys()
                 .await
+                .expect("in memory keystore")
                 .get_all_spendable_zaddresses()
                 .into_iter()
                 .collect();
@@ -650,7 +672,7 @@ impl LightClient {
                         if !all_notes && nd.spent.is_some() {
                             None
                         } else {
-                            let address = LightWallet::<()>::note_address(self.config.hrp_sapling_address(), nd);
+                            let address = LightWallet::note_address(self.config.hrp_sapling_address(), nd);
                             let spendable = address.is_some() &&
                                                     spendable_address.contains(&address.clone().unwrap()) &&
                                                     wtx.block <= anchor_height && nd.spent.is_none() && nd.unconfirmed_spent.is_none();
@@ -766,7 +788,7 @@ impl LightClient {
                 let memo_bytes: MemoBytes = m.memo.clone().into();
                 object! {
                     "to" => encode_payment_address(self.config.hrp_sapling_address(), &m.to),
-                    "memo" => LightWallet::<()>::memo_str(Some(m.memo)),
+                    "memo" => LightWallet::memo_str(Some(m.memo)),
                     "memohex" => hex::encode(memo_bytes.as_slice())
                 }
             }
@@ -812,7 +834,7 @@ impl LightClient {
                             let mut o = object! {
                                 "address" => om.address.clone(),
                                 "value"   => om.value,
-                                "memo"    => LightWallet::<()>::memo_str(Some(om.memo.clone()))
+                                "memo"    => LightWallet::memo_str(Some(om.memo.clone()))
                             };
 
                             if include_memo_hex {
@@ -849,8 +871,8 @@ impl LightClient {
                         "txid"         => format!("{}", v.txid),
                         "amount"       => nd.note.value as i64,
                         "zec_price"    => v.zec_price.map(|p| (p * 100.0).round() / 100.0),
-                        "address"      => LightWallet::<()>::note_address(self.config.hrp_sapling_address(), nd),
-                        "memo"         => LightWallet::<()>::memo_str(nd.memo.clone())
+                        "address"      => LightWallet::note_address(self.config.hrp_sapling_address(), nd),
+                        "memo"         => LightWallet::memo_str(nd.memo.clone())
                     };
 
                     if include_memo_hex {
@@ -911,8 +933,18 @@ impl LightClient {
 
         let new_address = {
             let addr = match addr_type {
-                "z" => self.wallet.keys().write().await.add_zaddr(),
-                "t" => self.wallet.keys().write().await.add_taddr(),
+                "z" => self
+                    .wallet
+                    .in_memory_keys_mut()
+                    .await
+                    .expect("in memory keystore add zaddress")
+                    .add_zaddr(),
+                "t" => self
+                    .wallet
+                    .in_memory_keys_mut()
+                    .await
+                    .expect("in memory keystore add address")
+                    .add_taddr(),
                 _ => {
                     let e = format!("Unrecognized address type: {}", addr_type);
                     error!("{}", e);

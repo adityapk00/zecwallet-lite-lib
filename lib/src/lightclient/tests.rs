@@ -177,7 +177,13 @@ async fn z_incoming_z_outgoing() {
     assert_eq!(lc.wallet.last_scanned_height().await, 10);
 
     // 2. Send an incoming tx to fill the wallet
-    let extfvk1 = lc.wallet.keys().read().await.get_all_extfvks()[0].clone();
+    let extfvk1 = lc
+        .wallet
+        .in_memory_keys()
+        .await
+        .expect("in memory keystore")
+        .get_all_extfvks()[0]
+        .clone();
     let value = 100_000;
     let (tx, _height, _) = fcbl.add_tx_paying(&extfvk1, value);
     mine_pending_blocks(&mut fcbl, &data, &lc).await;
@@ -191,7 +197,11 @@ async fn z_incoming_z_outgoing() {
     assert_eq!(b["spendable_zbalance"].as_u64().unwrap(), 0);
     assert_eq!(
         b["z_addresses"][0]["address"],
-        lc.wallet.keys().read().await.get_all_zaddresses()[0]
+        lc.wallet
+            .in_memory_keys()
+            .await
+            .expect("in memory keystore")
+            .get_all_zaddresses()[0]
     );
     assert_eq!(b["z_addresses"][0]["zbalance"].as_u64().unwrap(), value);
     assert_eq!(b["z_addresses"][0]["unverified_zbalance"].as_u64().unwrap(), value);
@@ -204,7 +214,14 @@ async fn z_incoming_z_outgoing() {
 
         assert_eq!(jv["txid"], tx.txid().to_string());
         assert_eq!(jv["amount"].as_u64().unwrap(), value);
-        assert_eq!(jv["address"], lc.wallet.keys().read().await.get_all_zaddresses()[0]);
+        assert_eq!(
+            jv["address"],
+            lc.wallet
+                .in_memory_keys()
+                .await
+                .expect("in memory keystore")
+                .get_all_zaddresses()[0]
+        );
         assert_eq!(jv["block_height"].as_u64().unwrap(), 11);
     } else {
         panic!("Expecting an array");
@@ -309,7 +326,13 @@ async fn multiple_incoming_same_tx() {
     let lc = LightClient::test_new(&config, None, 0).await.unwrap();
     let mut fcbl = FakeCompactBlockList::new(0);
 
-    let extfvk1 = lc.wallet.keys().read().await.get_all_extfvks()[0].clone();
+    let extfvk1 = lc
+        .wallet
+        .in_memory_keys()
+        .await
+        .expect("in memory keystore")
+        .get_all_extfvks()[0]
+        .clone();
     let value = 100_000;
 
     // 1. Mine 10 blocks
@@ -393,7 +416,11 @@ async fn multiple_incoming_same_tx() {
             assert_eq!(unspent_notes[i]["is_change"].as_bool().unwrap(), false);
             assert_eq!(
                 unspent_notes[i]["address"],
-                lc.wallet.keys().read().await.get_all_zaddresses()[0]
+                lc.wallet
+                    .in_memory_keys()
+                    .await
+                    .expect("in memory keystore")
+                    .get_all_zaddresses()[0]
             );
         }
     } else {
@@ -408,7 +435,11 @@ async fn multiple_incoming_same_tx() {
             assert_eq!(sorted_txns[i]["block_height"].as_u64().unwrap(), 11);
             assert_eq!(
                 sorted_txns[i]["address"],
-                lc.wallet.keys().read().await.get_all_zaddresses()[0]
+                lc.wallet
+                    .in_memory_keys()
+                    .await
+                    .expect("in memory keystore")
+                    .get_all_zaddresses()[0]
             );
             assert_eq!(sorted_txns[i]["amount"].as_u64().unwrap(), value + i as u64);
         }
@@ -461,7 +492,13 @@ async fn z_incoming_multiz_outgoing() {
     assert_eq!(lc.wallet.last_scanned_height().await, 10);
 
     // 2. Send an incoming tx to fill the wallet
-    let extfvk1 = lc.wallet.keys().read().await.get_all_extfvks()[0].clone();
+    let extfvk1 = lc
+        .wallet
+        .in_memory_keys()
+        .await
+        .expect("in memory keystore")
+        .get_all_extfvks()[0]
+        .clone();
     let value = 100_000;
     let (_tx, _height, _) = fcbl.add_tx_paying(&extfvk1, value);
     mine_pending_blocks(&mut fcbl, &data, &lc).await;
@@ -516,7 +553,13 @@ async fn z_to_z_scan_together() {
     fcbl.add_blocks(10);
 
     // 2. Send an incoming tx to fill the wallet
-    let extfvk1 = lc.wallet.keys().read().await.get_all_extfvks()[0].clone();
+    let extfvk1 = lc
+        .wallet
+        .in_memory_keys()
+        .await
+        .expect("in memory keystore")
+        .get_all_extfvks()[0]
+        .clone();
     let value = 100_000;
     let (tx, _height, note) = fcbl.add_tx_paying(&extfvk1, value);
 
@@ -673,7 +716,7 @@ async fn t_incoming_t_outgoing() {
     mine_random_blocks(&mut fcbl, &data, &lc, 10).await;
 
     // 2. Get an incoming tx to a t address
-    let sk = lc.wallet.keys().read().await.tkeys[0].clone();
+    let sk = lc.wallet.in_memory_keys().await.expect("in memory keystore").tkeys[0].clone();
     let pk = sk.pubkey().unwrap();
     let taddr = sk.address;
     let value = 100_000;
@@ -772,14 +815,20 @@ async fn mixed_txn() {
     assert_eq!(lc.wallet.last_scanned_height().await, 10);
 
     // 2. Send an incoming tx to fill the wallet
-    let extfvk1 = lc.wallet.keys().read().await.get_all_extfvks()[0].clone();
+    let extfvk1 = lc
+        .wallet
+        .in_memory_keys()
+        .await
+        .expect("in memory keystore")
+        .get_all_extfvks()[0]
+        .clone();
     let zvalue = 100_000;
     let (_ztx, _height, _) = fcbl.add_tx_paying(&extfvk1, zvalue);
     mine_pending_blocks(&mut fcbl, &data, &lc).await;
     mine_random_blocks(&mut fcbl, &data, &lc, 5).await;
 
     // 3. Send an incoming t-address txn
-    let sk = lc.wallet.keys().read().await.tkeys[0].clone();
+    let sk = lc.wallet.in_memory_keys().await.expect("in memory keystore").tkeys[0].clone();
     let pk = sk.pubkey().unwrap();
     let taddr = sk.address;
     let tvalue = 200_000;
@@ -874,14 +923,20 @@ async fn aborted_resync() {
     assert_eq!(lc.wallet.last_scanned_height().await, 10);
 
     // 2. Send an incoming tx to fill the wallet
-    let extfvk1 = lc.wallet.keys().read().await.get_all_extfvks()[0].clone();
+    let extfvk1 = lc
+        .wallet
+        .in_memory_keys()
+        .await
+        .expect("in memory keystore")
+        .get_all_extfvks()[0]
+        .clone();
     let zvalue = 100_000;
     let (_ztx, _height, _) = fcbl.add_tx_paying(&extfvk1, zvalue);
     mine_pending_blocks(&mut fcbl, &data, &lc).await;
     mine_random_blocks(&mut fcbl, &data, &lc, 5).await;
 
     // 3. Send an incoming t-address txn
-    let sk = lc.wallet.keys().read().await.tkeys[0].clone();
+    let sk = lc.wallet.in_memory_keys().await.expect("in memory keystore").tkeys[0].clone();
     let pk = sk.pubkey().unwrap();
     let taddr = sk.address;
     let tvalue = 200_000;
@@ -984,14 +1039,20 @@ async fn no_change() {
     assert_eq!(lc.wallet.last_scanned_height().await, 10);
 
     // 2. Send an incoming tx to fill the wallet
-    let extfvk1 = lc.wallet.keys().read().await.get_all_extfvks()[0].clone();
+    let extfvk1 = lc
+        .wallet
+        .in_memory_keys()
+        .await
+        .expect("in memory keystore")
+        .get_all_extfvks()[0]
+        .clone();
     let zvalue = 100_000;
     let (_ztx, _height, _) = fcbl.add_tx_paying(&extfvk1, zvalue);
     mine_pending_blocks(&mut fcbl, &data, &lc).await;
     mine_random_blocks(&mut fcbl, &data, &lc, 5).await;
 
     // 3. Send an incoming t-address txn
-    let sk = lc.wallet.keys().read().await.tkeys[0].clone();
+    let sk = lc.wallet.in_memory_keys().await.expect("in memory keystore").tkeys[0].clone();
     let pk = sk.pubkey().unwrap();
     let taddr = sk.address;
     let tvalue = 200_000;
@@ -1126,7 +1187,13 @@ async fn witness_clearing() {
     assert_eq!(lc.wallet.last_scanned_height().await, 10);
 
     // 2. Send an incoming tx to fill the wallet
-    let extfvk1 = lc.wallet.keys().read().await.get_all_extfvks()[0].clone();
+    let extfvk1 = lc
+        .wallet
+        .in_memory_keys()
+        .await
+        .expect("in memory keystore")
+        .get_all_extfvks()[0]
+        .clone();
     let value = 100_000;
     let (tx, _height, _) = fcbl.add_tx_paying(&extfvk1, value);
     mine_pending_blocks(&mut fcbl, &data, &lc).await;
@@ -1231,7 +1298,13 @@ async fn mempool_clearing() {
     assert_eq!(lc.wallet.last_scanned_height().await, 10);
 
     // 2. Send an incoming tx to fill the wallet
-    let extfvk1 = lc.wallet.keys().read().await.get_all_extfvks()[0].clone();
+    let extfvk1 = lc
+        .wallet
+        .in_memory_keys()
+        .await
+        .expect("in memory keystore")
+        .get_all_extfvks()[0]
+        .clone();
     let value = 100_000;
     let (tx, _height, _) = fcbl.add_tx_paying(&extfvk1, value);
     let orig_txid = tx.txid().to_string();
@@ -1323,7 +1396,13 @@ async fn mempool_and_balance() {
     assert_eq!(lc.wallet.last_scanned_height().await, 10);
 
     // 2. Send an incoming tx to fill the wallet
-    let extfvk1 = lc.wallet.keys().read().await.get_all_extfvks()[0].clone();
+    let extfvk1 = lc
+        .wallet
+        .in_memory_keys()
+        .await
+        .expect("in memory keystore")
+        .get_all_extfvks()[0]
+        .clone();
     let value = 100_000;
     let (_tx, _height, _) = fcbl.add_tx_paying(&extfvk1, value);
     mine_pending_blocks(&mut fcbl, &data, &lc).await;
