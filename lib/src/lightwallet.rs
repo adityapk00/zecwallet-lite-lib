@@ -207,6 +207,10 @@ impl LightWallet {
         self.txns.clone()
     }
 
+    pub fn keys(&self) -> Arc<RwLock<Keystores>> {
+        self.keys.clone()
+    }
+
     pub async fn set_blocks(&self, new_blocks: Vec<BlockData>) {
         let mut blocks = self.blocks.write().await;
         blocks.clear();
@@ -745,6 +749,7 @@ impl LightWallet {
 
         // Start collecting sapling funds at every allowed offset
         for anchor_offset in &self.config.anchor_offset {
+            //TODO: allow any keystore (see usage)
             let keys = self.in_memory_keys().await.expect("in memory keystore");
 
             let mut candidate_notes = self
@@ -925,6 +930,7 @@ impl LightWallet {
     pub async fn unverified_zbalance(&self, addr: Option<String>) -> u64 {
         let anchor_height = self.get_anchor_height().await;
 
+        //TODO: allow any keystore (see usage)
         let keys = self.in_memory_keys().await.expect("in memory keystore");
 
         self.txns
@@ -966,6 +972,7 @@ impl LightWallet {
     pub async fn spendable_zbalance(&self, addr: Option<String>) -> u64 {
         let anchor_height = self.get_anchor_height().await;
 
+        //TODO: allow any keystore (see usage)
         let keys = self.in_memory_keys().await.expect("in memory keystore");
 
         self.txns
@@ -1001,6 +1008,7 @@ impl LightWallet {
     }
 
     pub async fn remove_unused_taddrs(&self) {
+        //TODO: allow any keystore (see usage)
         let mut keys = self.in_memory_keys_mut().await.expect("in memory keystore");
 
         let taddrs = keys.get_all_taddrs();
@@ -1035,6 +1043,7 @@ impl LightWallet {
     }
 
     pub async fn remove_unused_zaddrs(&self) {
+        //TODO: allow any keystore (see usage)
         let mut keys = self.in_memory_keys_mut().await.expect("in memory keystore");
 
         let zaddrs = keys.get_all_zaddresses();
@@ -1389,6 +1398,7 @@ impl LightWallet {
     }
 
     pub async fn encrypt(&self, passwd: String) -> io::Result<()> {
+        //TODO: allow any keystore (see usage)
         self.in_memory_keys_mut()
             .await
             .expect("in memory keystore")
@@ -1396,10 +1406,12 @@ impl LightWallet {
     }
 
     pub async fn lock(&self) -> io::Result<()> {
+        //TODO: allow any keystore (see usage)
         self.in_memory_keys_mut().await.expect("in memory keystore").lock()
     }
 
     pub async fn unlock(&self, passwd: String) -> io::Result<()> {
+        //TODO: allow any keystore (see usage)
         self.in_memory_keys_mut()
             .await
             .expect("in memory keystore")
@@ -1407,6 +1419,7 @@ impl LightWallet {
     }
 
     pub async fn remove_encryption(&self, passwd: String) -> io::Result<()> {
+        //TODO: allow any keystore (see usage)
         self.in_memory_keys_mut()
             .await
             .expect("in memory keystore")

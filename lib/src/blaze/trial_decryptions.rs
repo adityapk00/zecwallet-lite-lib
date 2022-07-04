@@ -1,6 +1,6 @@
 use crate::{
     compact_formats::CompactBlock,
-    lightwallet::{data::WalletTx, keys::InMemoryKeys, wallet_txns::WalletTxns, MemoDownloadOption},
+    lightwallet::{data::WalletTx, keys::Keystores, wallet_txns::WalletTxns, MemoDownloadOption},
 };
 use futures::{stream::FuturesUnordered, StreamExt};
 use log::info;
@@ -23,12 +23,12 @@ use zcash_primitives::{
 use super::syncdata::BlazeSyncData;
 
 pub struct TrialDecryptions {
-    keys: Arc<RwLock<InMemoryKeys>>,
+    keys: Arc<RwLock<Keystores>>,
     wallet_txns: Arc<RwLock<WalletTxns>>,
 }
 
 impl TrialDecryptions {
-    pub fn new(keys: Arc<RwLock<InMemoryKeys>>, wallet_txns: Arc<RwLock<WalletTxns>>) -> Self {
+    pub fn new(keys: Arc<RwLock<Keystores>>, wallet_txns: Arc<RwLock<WalletTxns>>) -> Self {
         Self { keys, wallet_txns }
     }
 
@@ -103,7 +103,7 @@ impl TrialDecryptions {
 
     async fn trial_decrypt_batch(
         cbs: Vec<CompactBlock>,
-        keys: Arc<RwLock<InMemoryKeys>>,
+        keys: Arc<RwLock<Keystores>>,
         bsync_data: Arc<RwLock<BlazeSyncData>>,
         ivks: Arc<Vec<SaplingIvk>>,
         wallet_txns: Arc<RwLock<WalletTxns>>,

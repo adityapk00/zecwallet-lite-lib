@@ -1,25 +1,23 @@
 use crate::compact_formats::RawTransaction;
 
-use crate::lightwallet::keys::InMemoryKeys;
+use crate::lightwallet::keys::Keystores;
 use std::sync::Arc;
-use tokio::join;
-use tokio::sync::mpsc::unbounded_channel;
-use tokio::sync::mpsc::UnboundedReceiver;
-use tokio::sync::oneshot;
 use tokio::{
-    sync::{mpsc::UnboundedSender, RwLock},
+    join,
+    sync::{
+        mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
+        oneshot, RwLock,
+    },
     task::JoinHandle,
 };
-use zcash_primitives::consensus::BlockHeight;
-
-use zcash_primitives::transaction::Transaction;
+use zcash_primitives::{consensus::BlockHeight, transaction::Transaction};
 
 pub struct FetchTaddrTxns {
-    keys: Arc<RwLock<InMemoryKeys>>,
+    keys: Arc<RwLock<Keystores>>,
 }
 
 impl FetchTaddrTxns {
-    pub fn new(keys: Arc<RwLock<InMemoryKeys>>) -> Self {
+    pub fn new(keys: Arc<RwLock<Keystores>>) -> Self {
         Self { keys }
     }
 
@@ -161,7 +159,7 @@ mod test {
         let gened_taddrs: Vec<_> = (0..5).into_iter().map(|n| format!("taddr{}", n)).collect();
         keys.tkeys = gened_taddrs.iter().map(|ta| WalletTKey::empty(ta)).collect::<Vec<_>>();
 
-        let ftt = FetchTaddrTxns::new(Arc::new(RwLock::new(keys)));
+        let ftt = FetchTaddrTxns::new(Arc::new(RwLock::new(keys.into())));
 
         let (taddr_fetcher_tx, taddr_fetcher_rx) = oneshot::channel::<(
             (Vec<String>, u64, u64),
