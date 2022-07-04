@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use async_trait::async_trait;
 use ledger_transport::Exchange;
@@ -10,6 +10,7 @@ use ledger_zcash::{
 use rand::rngs::OsRng;
 use secp256k1::PublicKey as SecpPublicKey;
 use tokio::sync::{mpsc, RwLock};
+use zcash_client_backend::encoding::encode_payment_address;
 use zcash_primitives::{
     consensus::{BlockHeight, BranchId, Network, Parameters},
     keys::OutgoingViewingKey,
@@ -26,7 +27,10 @@ use zcash_primitives::{
 };
 use zx_bip44::BIP44Path;
 
-use crate::{lightclient::lightclient_config::LightClientConfig, lightwallet::utils::compute_taddr};
+use crate::{
+    lightclient::lightclient_config::{LightClientConfig, GAP_RULE_UNUSED_ADDRESSES},
+    lightwallet::utils::compute_taddr,
+};
 
 use super::{Builder, Keystore, KeystoreBuilderLifetime, TransactionMetadata, TxProver};
 
@@ -52,15 +56,15 @@ pub enum LedgerError {
     KeyNotFound,
 }
 
+//we use btreemap so we can get an ordered list when iterating by key
 pub struct LedgerKeystore {
-    config: LightClientConfig,
-    app: ZcashApp<TransportNativeHID>,
-    transparent_addrs: RwLock<HashMap<[u32; 5], SecpPublicKey>>,
+    pub config: LightClientConfig,
 
-    //the first shielded key path in the keystore
-    first_shielded: RwLock<Option<[u32; 3]>>,
+    app: ZcashApp<TransportNativeHID>,
+    transparent_addrs: RwLock<BTreeMap<[u32; 5], SecpPublicKey>>,
+
     //associated a path with an ivk and the default diversifier
-    shielded_addrs: RwLock<HashMap<[u32; 3], (SaplingIvk, Diversifier)>>,
+    shielded_addrs: RwLock<BTreeMap<[u32; 3], (SaplingIvk, Diversifier)>>,
 }
 
 impl LedgerKeystore {
@@ -74,7 +78,6 @@ impl LedgerKeystore {
             app,
             config,
             transparent_addrs: Default::default(),
-            first_shielded: Default::default(),
             shielded_addrs: Default::default(),
         })
     }
@@ -129,14 +132,59 @@ impl LedgerKeystore {
     }
 
     /// Retrieve all the cached/known IVKs
-    pub async fn get_all_ivks(&self) -> impl Iterator<Item = SaplingIvk> {
+    pub async fn get_all_ivks(&self) -> impl Iterator<Item = (SaplingIvk, Diversifier)> {
         let guard = self.shielded_addrs.read().await;
 
         guard
             .values()
-            .map(|(ivk, _)| SaplingIvk(ivk.0.clone()))
+            .map(|(ivk, d)| (SaplingIvk(ivk.0.clone()), d.clone()))
             .collect::<Vec<_>>()
             .into_iter()
+    }
+
+    /// Retrieve all the cached/known OVKs
+    pub async fn get_all_ovks(&self) -> impl Iterator<Item = OutgoingViewingKey> {
+        let guard = self.shielded_addrs.read().await;
+
+        let iter = guard.keys();
+        let mut ovks = Vec::with_capacity(iter.size_hint().0);
+        for path in iter {
+            match self.get_ovk_of(path).await {
+                Ok(ovk) => ovks.push(ovk),
+                //TODO: handle error? return after first error?
+                Err(_e) => continue,
+            }
+        }
+
+        ovks.into_iter()
+    }
+
+    /// Retrieve all the cached/known ZAddrs
+    pub async fn get_all_zaddresses(&self) -> impl Iterator<Item = String> {
+        let hrp = self.config.hrp_sapling_address();
+
+        self.get_all_ivks()
+            .await
+            .map(|(ivk, d)| {
+                ivk.to_payment_address(d)
+                    .expect("known ivk and div to get payment addres")
+            })
+            .map(move |addr| encode_payment_address(&hrp, &addr))
+    }
+
+    /// Retrieve all the cached/known transparent public keys
+    pub async fn get_all_tkeys(&self) -> impl Iterator<Item = SecpPublicKey> {
+        let guard = self.transparent_addrs.read().await;
+
+        guard.values().cloned().collect::<Vec<_>>().into_iter()
+    }
+
+    /// Retrieve all the cached/known transparent addresses
+    ///
+    /// Convenient wrapper over `get_all_tkeys`
+    pub async fn get_all_taddrs(&self) -> impl Iterator<Item = String> {
+        let prefix = self.config.base58_pubkey_address();
+        self.get_all_tkeys().await.map(move |k| compute_taddr(&k, &prefix, &[]))
     }
 
     /// Retrieve a HashMap of transparent addresses to public key
@@ -154,13 +202,10 @@ impl LedgerKeystore {
             .collect()
     }
 
-    async fn is_first_shielded_set(&self) -> bool {
-        self.first_shielded.read().await.is_some()
-    }
-
     /// Retrieve the first shielded key present in the keystore
     pub async fn first_shielded(&self) -> Option<[u32; 3]> {
-        self.first_shielded.read().await.clone()
+        //retrieve the first key
+        self.shielded_addrs.read().await.keys().next().cloned()
     }
 
     /// Retrieve the OVK of a given path
@@ -168,6 +213,98 @@ impl LedgerKeystore {
         let ovk = self.app.get_ovk(path[2]).await?;
 
         Ok(OutgoingViewingKey(ovk.0))
+    }
+
+    /// Given an address, verify that we have N addresses
+    /// after that one (if present in the cache)
+    pub async fn ensure_hd_taddresses(&mut self, address: &str) {
+        if GAP_RULE_UNUSED_ADDRESSES == 0 {
+            return;
+        }
+
+        let prefix = self.config.base58_pubkey_address();
+
+        let last_address_used_pos = self
+            .transparent_addrs
+            .get_mut()
+            .iter()
+            .rev()
+            //get the last N addresses
+            .take(GAP_RULE_UNUSED_ADDRESSES)
+            //get the transparent address of each
+            .map(move |(path, key)| (*path, compute_taddr(&key, &prefix, &[])))
+            .enumerate()
+            //find the one that matches the needle
+            .find(|(_, (_, s))| s == address);
+
+        //if we find the given address in the last N
+        if let Some((i, (path, _))) = last_address_used_pos {
+            // then we should cache/generate N - i addresses
+            for i in 0..(GAP_RULE_UNUSED_ADDRESSES - i) {
+                //increase the last index by i
+                // +1 for the 0th i
+                let path = [
+                    ChildIndex::from_index(path[0]),
+                    ChildIndex::from_index(path[1]),
+                    ChildIndex::from_index(path[2]),
+                    ChildIndex::from_index(path[3]),
+                    ChildIndex::from_index(path[4] + 1 + i as u32),
+                ];
+
+                //add the new key
+                //TODO: report errors? stop at first error?
+                let _ = self.get_t_pubkey(&path).await;
+            }
+        }
+    }
+
+    /// Given an address, verify that we have N addresses
+    /// after that one (if present in the cache)
+    pub async fn ensure_hd_zaddresses(&mut self, address: &str) {
+        if GAP_RULE_UNUSED_ADDRESSES == 0 {
+            return;
+        }
+
+        let hrp = self.config.hrp_sapling_address();
+
+        let last_address_used_pos = self
+            .shielded_addrs
+            .get_mut()
+            .iter()
+            .rev()
+            //get the last N addresses
+            .take(GAP_RULE_UNUSED_ADDRESSES)
+            //get the payment address of each
+            .map(move |(path, (ivk, d))| {
+                (
+                    *path,
+                    ivk.to_payment_address(*d)
+                        .expect("known ivk and diversifier to get payment address"),
+                )
+            })
+            //get the bech32 encoded address of each
+            .map(move |(path, zaddr)| (path, encode_payment_address(hrp, &zaddr)))
+            .enumerate()
+            //find the one that matches the needle
+            .find(|(_, (_, s))| s == address);
+
+        //if we find the given address in the last N
+        if let Some((i, (path, _))) = last_address_used_pos {
+            // then we should cache/generate N - i addresses
+            for i in 0..(GAP_RULE_UNUSED_ADDRESSES - i) {
+                //increase the last index by i
+                // +1 for the 0th i
+                let path = [
+                    ChildIndex::from_index(path[0]),
+                    ChildIndex::from_index(path[1]),
+                    ChildIndex::from_index(path[2] + 1 + i as u32),
+                ];
+
+                //add the new key
+                //TODO: report errors? stop at first error?
+                let _ = self.get_z_payment_address(&path).await;
+            }
+        }
     }
 }
 
@@ -222,12 +359,6 @@ impl Keystore for LedgerKeystore {
                 let ivk = self.app.get_ivk(path[2]).await.map(|ivk| SaplingIvk(ivk))?;
 
                 let div = self.get_default_div(path[2]).await?;
-
-                //if the first address isn't known set it here
-                if !self.is_first_shielded_set().await {
-                    let guard = self.first_shielded.write().await;
-                    guard.replace(path.clone());
-                }
 
                 let addr = ivk
                     .to_payment_address(div)

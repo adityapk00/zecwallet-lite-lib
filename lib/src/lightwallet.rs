@@ -637,7 +637,7 @@ impl LightWallet {
             let spendable_keys: Vec<_> = keys
                 .get_all_extfvks()
                 .into_iter()
-                .filter(|extfvk| keys.have_spending_key(extfvk))
+                .filter(|extfvk| keys.have_spending_key(&extfvk.fvk.vk.ivk()))
                 .collect();
 
             txns.adjust_spendable_status(spendable_keys);
@@ -944,7 +944,7 @@ impl LightWallet {
                     .filter(|nd| nd.spent.is_none() && nd.unconfirmed_spent.is_none())
                     .filter(|nd| {
                         // Check to see if we have this note's spending key.
-                        keys.have_spending_key(&nd.extfvk)
+                        keys.have_spending_key(&nd.extfvk.fvk.vk.ivk())
                     })
                     .filter(|nd| match addr.clone() {
                         Some(a) => {
@@ -987,7 +987,7 @@ impl LightWallet {
                         .filter(|nd| nd.spent.is_none() && nd.unconfirmed_spent.is_none())
                         .filter(|nd| {
                             // Check to see if we have this note's spending key and witnesses
-                            keys.have_spending_key(&nd.extfvk) && nd.witnesses.len() > 0
+                            keys.have_spending_key(&nd.extfvk.fvk.vk.ivk()) && nd.witnesses.len() > 0
                         })
                         .filter(|nd| match addr.as_ref() {
                             Some(a) => {

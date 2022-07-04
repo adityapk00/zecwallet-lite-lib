@@ -14,7 +14,7 @@ use zcash_client_backend::{
 use zcash_primitives::{
     consensus::{BlockHeight, Network},
     legacy::TransparentAddress,
-    primitives::PaymentAddress,
+    primitives::{PaymentAddress, SaplingIvk},
     serialize::Vector,
     zip32::{ChildIndex, ExtendedFullViewingKey, ExtendedSpendingKey},
 };
@@ -380,10 +380,10 @@ impl InMemoryKeys {
         self.tkeys.iter().map(|tk| tk.address.clone()).collect::<Vec<_>>()
     }
 
-    pub fn have_spending_key(&self, extfvk: &ExtendedFullViewingKey) -> bool {
+    pub fn have_spending_key(&self, ivk: &SaplingIvk) -> bool {
         self.zkeys
             .iter()
-            .find(|zk| zk.extfvk == *extfvk)
+            .find(|zk| zk.extfvk.fvk.vk.ivk().0 == ivk.0)
             .map(|zk| zk.have_spending_key())
             .unwrap_or(false)
     }
@@ -426,7 +426,7 @@ impl InMemoryKeys {
     }
 
     // If one of the last 'n' taddress was used, ensure we add the next HD taddress to the wallet.
-    pub fn ensure_hd_taddresses(&mut self, address: &String) {
+    pub fn ensure_hd_taddresses(&mut self, address: &str) {
         if GAP_RULE_UNUSED_ADDRESSES == 0 {
             return;
         }
@@ -459,7 +459,7 @@ impl InMemoryKeys {
     }
 
     // If one of the last 'n' zaddress was used, ensure we add the next HD zaddress to the wallet
-    pub fn ensure_hd_zaddresses(&mut self, address: &String) {
+    pub fn ensure_hd_zaddresses(&mut self, address: &str) {
         if GAP_RULE_UNUSED_ADDRESSES == 0 {
             return;
         }

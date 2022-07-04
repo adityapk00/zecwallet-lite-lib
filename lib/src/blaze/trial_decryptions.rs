@@ -18,6 +18,7 @@ use zcash_primitives::{
     note_encryption::try_sapling_compact_note_decryption,
     primitives::{Nullifier, SaplingIvk},
     transaction::{Transaction, TxId},
+    zip32::ExtendedFullViewingKey,
 };
 
 use super::syncdata::BlazeSyncData;
@@ -50,14 +51,7 @@ impl TrialDecryptions {
             let mut workers = FuturesUnordered::new();
             let mut cbs = vec![];
 
-            let ivks = Arc::new(
-                keys.read()
-                    .await
-                    .zkeys
-                    .iter()
-                    .map(|zk| zk.extfvk().fvk.vk.ivk())
-                    .collect::<Vec<_>>(),
-            );
+            let ivks = Arc::new(keys.read().await.get_all_ivks().await.collect::<Vec<_>>());
 
             while let Some(cb) = rx.recv().await {
                 cbs.push(cb);
@@ -110,7 +104,7 @@ impl TrialDecryptions {
         detected_txid_sender: UnboundedSender<(TxId, Nullifier, BlockHeight, Option<u32>)>,
         fulltx_fetcher: UnboundedSender<(TxId, oneshot::Sender<Result<Transaction, String>>)>,
     ) -> Result<(), String> {
-        let config = keys.read().await.config().clone();
+        let config = keys.read().await.config();
         let blk_count = cbs.len();
         let mut workers = FuturesUnordered::new();
 
@@ -129,7 +123,7 @@ impl TrialDecryptions {
                         Ok(epk) => epk,
                     };
 
-                    for (i, ivk) in ivks.iter().enumerate() {
+                    for (i, ivk) in ivks.iter().map(|k| SaplingIvk(k.0)).enumerate() {
                         if let Some((note, to)) = try_sapling_compact_note_decryption(
                             &config.get_params(),
                             height,
@@ -149,8 +143,9 @@ impl TrialDecryptions {
 
                             workers.push(tokio::spawn(async move {
                                 let keys = keys.read().await;
-                                let extfvk = keys.zkeys[i].extfvk();
-                                let have_spending_key = keys.have_spending_key(extfvk);
+                                let extfvk: ExtendedFullViewingKey =
+                                    todo!("retrieve extfvk for nullifier and to add to note");
+                                let have_spending_key = keys.have_spending_key(&ivk).await;
                                 let uri = bsync_data.read().await.uri().clone();
 
                                 // Get the witness for the note

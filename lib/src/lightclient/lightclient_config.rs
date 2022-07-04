@@ -289,7 +289,7 @@ impl LightClientConfig {
         }
     }
 
-    pub fn hrp_sapling_address(&self) -> &str {
+    pub fn hrp_sapling_address(&self) -> &'static str {
         match &self.chain_name[..] {
             "main" => mainnet::HRP_SAPLING_PAYMENT_ADDRESS,
             "test" => testnet::HRP_SAPLING_PAYMENT_ADDRESS,
@@ -298,7 +298,7 @@ impl LightClientConfig {
         }
     }
 
-    pub fn hrp_sapling_private_key(&self) -> &str {
+    pub fn hrp_sapling_private_key(&self) -> &'static str {
         match &self.chain_name[..] {
             "main" => mainnet::HRP_SAPLING_EXTENDED_SPENDING_KEY,
             "test" => testnet::HRP_SAPLING_EXTENDED_SPENDING_KEY,
@@ -307,7 +307,7 @@ impl LightClientConfig {
         }
     }
 
-    pub fn hrp_sapling_viewing_key(&self) -> &str {
+    pub fn hrp_sapling_viewing_key(&self) -> &'static str {
         match &self.chain_name[..] {
             "main" => mainnet::HRP_SAPLING_EXTENDED_FULL_VIEWING_KEY,
             "test" => testnet::HRP_SAPLING_EXTENDED_FULL_VIEWING_KEY,

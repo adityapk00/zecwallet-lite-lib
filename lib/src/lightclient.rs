@@ -1515,16 +1515,19 @@ impl LightClient {
             ));
         }
 
-        let addr = address
-            .or(self
-                .wallet
-                .keys()
-                .read()
-                .await
-                .get_all_zaddresses()
-                .get(0)
-                .map(|s| s.clone()))
-            .unwrap();
+        let addr = match address {
+            Some(addr) => addr,
+            None => {
+                let keys = self.wallet.keys();
+                let guard = keys.read().await;
+
+                guard
+                    .first_zkey()
+                    .await
+                    .map(|(_ovk, addr)| guard.encode_zaddr(addr))
+                    .expect("no address")
+            }
+        };
         let branch_id = self.consensus_branch_id().await;
 
         let result = {

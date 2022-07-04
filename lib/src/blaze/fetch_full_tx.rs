@@ -12,7 +12,6 @@ use log::info;
 use std::{
     collections::HashSet,
     convert::{TryFrom, TryInto},
-    iter::FromIterator,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc,
@@ -159,8 +158,9 @@ impl FetchFullTxns {
         price: Option<f64>,
     ) {
         // Collect our t-addresses for easy checking
-        let taddrs = keys.read().await.get_all_taddrs();
-        let taddrs_set: HashSet<_> = taddrs.iter().map(|t| t.clone()).collect();
+        // by collecting into a set we do more efficient lookup
+        // and avoid duplicates (shouldn't be any anyways)
+        let taddrs_set = keys.read().await.get_all_taddrs().await.collect::<HashSet<_>>();
 
         // Step 1: Scan all transparent outputs to see if we recieved any money
         for (n, vout) in tx.vout.iter().enumerate() {
@@ -260,20 +260,21 @@ impl FetchFullTxns {
                 }
             }
         }
+
         // Collect all our z addresses, to check for change
-        let z_addresses: HashSet<String> = HashSet::from_iter(keys.read().await.get_all_zaddresses().into_iter());
-
         // Collect all our OVKs, to scan for outputs
-        let ovks: Vec<_> = keys
-            .read()
-            .await
-            .get_all_extfvks()
-            .iter()
-            .map(|k| k.fvk.ovk.clone())
-            .collect();
+        let (z_addresses, ovks, ivks) = {
+            let guard = keys.read().await;
 
-        let extfvks = Arc::new(keys.read().await.get_all_extfvks());
-        let ivks: Vec<_> = extfvks.iter().map(|k| k.fvk.vk.ivk()).collect();
+            let (addrs, ovks, ivks) =
+                tokio::join!(guard.get_all_zaddresses(), guard.get_all_ovks(), guard.get_all_ivks());
+
+            (
+                addrs.collect::<HashSet<_>>(),
+                ovks.collect::<Vec<_>>(),
+                ivks.collect::<Vec<_>>(),
+            )
+        };
 
         // Step 4: Scan shielded sapling outputs to see if anyone of them is us, and if it is, extract the memo. Note that if this
         // is invoked by a transparent transaction, and we have not seen this Tx from the trial_decryptions processor, the Note
@@ -303,7 +304,7 @@ impl FetchFullTxns {
                         block_time as u64,
                         note.clone(),
                         to,
-                        &extfvks.get(i).unwrap(),
+                        todo!("pending note without extfvk"),
                     );
                 }
 

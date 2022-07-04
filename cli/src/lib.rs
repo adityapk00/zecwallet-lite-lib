@@ -193,7 +193,7 @@ pub fn start_interactive(command_tx: Sender<(String, Vec<String>)>, resp_rx: Rec
     }
 }
 
-pub fn command_loop(lightclient: Arc<LightClient>) -> (Sender<(String, Vec<String>)>, Receiver<String>) {
+pub fn command_loop(lc: Arc<LightClient>) -> (Sender<(String, Vec<String>)>, Receiver<String>) {
     let (command_tx, command_rx) = channel::<(String, Vec<String>)>();
     let (resp_tx, resp_rx) = channel::<String>();
 
