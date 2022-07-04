@@ -23,6 +23,7 @@ use super::data::{OutgoingTxMetadata, SaplingNoteData, Utxo, WalletTx, WitnessCa
 /// List of all transactions in a wallet.
 /// Note that the parent is expected to hold a RwLock, so we will assume that all accesses to
 /// this struct are threadsafe/locked properly.
+#[derive(Default)]
 pub struct WalletTxns {
     pub(crate) current: HashMap<TxId, WalletTx>,
     pub(crate) last_txid: Option<TxId>,
@@ -34,10 +35,7 @@ impl WalletTxns {
     }
 
     pub fn new() -> Self {
-        Self {
-            current: HashMap::new(),
-            last_txid: None,
-        }
+        Default::default()
     }
 
     pub fn read_old<R: Read>(mut reader: R) -> io::Result<Self> {

@@ -197,7 +197,6 @@ pub fn command_loop(lightclient: Arc<LightClient>) -> (Sender<(String, Vec<Strin
     let (command_tx, command_rx) = channel::<(String, Vec<String>)>();
     let (resp_tx, resp_rx) = channel::<String>();
 
-    let lc = lightclient.clone();
     std::thread::spawn(move || {
         LightClient::start_mempool_monitor(lc.clone());
 

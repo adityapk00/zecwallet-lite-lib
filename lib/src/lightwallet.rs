@@ -69,15 +69,24 @@ pub struct SendProgress {
     pub last_txid: Option<String>,
 }
 
-impl SendProgress {
-    fn new(id: u32) -> Self {
-        SendProgress {
-            id,
+impl Default for SendProgress {
+    fn default() -> Self {
+        Self {
+            id: 0,
             is_send_in_progress: false,
             progress: 0,
             total: 0,
             last_error: None,
             last_txid: None,
+        }
+    }
+}
+
+impl SendProgress {
+    fn new(id: u32) -> Self {
+        SendProgress {
+            id,
+            ..Default::default()
         }
     }
 }
@@ -170,6 +179,20 @@ pub struct LightWallet<K = InMemoryKeys> {
 }
 
 impl<K> LightWallet<K> {
+    pub fn with_keystore(config: LightClientConfig, height: u64, keystore: K) -> Self {
+        Self {
+            keys: Arc::new(RwLock::new(keystore)),
+            txns: Default::default(),
+            blocks: Default::default(),
+            wallet_options: Default::default(),
+            config,
+            birthday: AtomicU64::new(height),
+            verified_tree: Default::default(),
+            send_progress: Arc::new(RwLock::new(SendProgress::new(0))),
+            price: Default::default(),
+        }
+    }
+
     // Before version 20, witnesses didn't store their height, so we need to update them.
     pub async fn set_witness_block_heights(&mut self) {
         let top_height = self.last_scanned_height().await;

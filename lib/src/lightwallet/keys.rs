@@ -10,7 +10,7 @@ use zcash_primitives::{
 };
 
 mod txbuilder;
-pub use txbuilder::{Builder, InMemoryBuilder, TxProver};
+pub use txbuilder::{Builder, InMemoryBuilder, TransactionMetadata, TxProver};
 
 /// Sha256(Sha256(value))
 pub fn double_sha256(payload: &[u8]) -> Vec<u8> {

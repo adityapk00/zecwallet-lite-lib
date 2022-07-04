@@ -1,4 +1,8 @@
+use crate::lightwallet::keys::ToBase58Check;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use ripemd160::{Digest, Ripemd160};
+use secp256k1::PublicKey;
+use sha2::Sha256;
 use std::io::{self, Read, Write};
 use zcash_primitives::memo::MemoBytes;
 
@@ -33,4 +37,11 @@ pub fn interpret_memo_string(memo_str: String) -> Result<MemoBytes, String> {
     };
 
     MemoBytes::from_bytes(&s_bytes).map_err(|_| format!("Error creating output. Memo '{:?}' is too long", memo_str))
+}
+
+pub fn compute_taddr(key: &PublicKey, version: &[u8], suffix: &[u8]) -> String {
+    let mut hasher = Ripemd160::new();
+    hasher.update(Sha256::digest(&key.serialize().to_vec()));
+
+    hasher.finalize().to_base58check(version, suffix)
 }

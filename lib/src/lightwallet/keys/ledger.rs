@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 use ledger_transport::Exchange;
-use ledger_transport_hid::TransportNativeHID;
+use ledger_transport_hid::{LedgerHIDError, TransportNativeHID};
 use ledger_zcash::{
     builder::{Builder as ZBuilder, BuilderError},
     LedgerAppError, ZcashApp,
@@ -32,6 +32,9 @@ use super::{Builder, Keystore, KeystoreBuilderLifetime, TransactionMetadata, TxP
 
 #[derive(Debug, thiserror::Error)]
 pub enum LedgerError {
+    #[error("Error: unable to create keystore")]
+    InitializationError(#[from] LedgerHIDError),
+
     #[error("Error: error from inner builder: {}", .0)]
     Builder(#[from] BuilderError),
     #[error("Error: error when communicating with ledger: {}", .0)]
@@ -59,6 +62,20 @@ pub struct LedgerKeystore {
 }
 
 impl LedgerKeystore {
+    pub fn new(config: LightClientConfig) -> Result<Self, LedgerError> {
+        let hidapi = ledger_transport_hid::hidapi::HidApi::new().map_err(|hid| LedgerHIDError::Hid(hid))?;
+
+        let transport = TransportNativeHID::new(&hidapi)?;
+        let app = ZcashApp::new(transport);
+
+        Ok(Self {
+            app,
+            config,
+            transparent_addrs: Default::default(),
+            shielded_addrs: Default::default(),
+        })
+    }
+
     fn path_slice_to_bip44(path: &[ChildIndex]) -> Result<BIP44Path, LedgerError> {
         let path = path
             .iter()
