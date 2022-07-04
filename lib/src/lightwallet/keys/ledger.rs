@@ -32,7 +32,7 @@ use crate::{
     lightwallet::utils::compute_taddr,
 };
 
-use super::{Builder, Keystore, KeystoreBuilderLifetime, TransactionMetadata, TxProver};
+use super::{Builder, InMemoryKeys, Keystore, KeystoreBuilderLifetime, TransactionMetadata, TxProver};
 
 #[derive(Debug, thiserror::Error)]
 pub enum LedgerError {
@@ -304,6 +304,60 @@ impl LedgerKeystore {
                 //TODO: report errors? stop at first error?
                 let _ = self.get_z_payment_address(&path).await;
             }
+        }
+    }
+
+    /// Create a new transparent address with path +1 from the latest one
+    pub async fn add_taddr(&mut self) -> String {
+        //find the highest path we have
+        let path = self
+            .transparent_addrs
+            .get_mut()
+            .keys()
+            .last()
+            .cloned()
+            .map(|path| {
+                [
+                    ChildIndex::from_index(path[0]),
+                    ChildIndex::from_index(path[1]),
+                    ChildIndex::from_index(path[2]),
+                    ChildIndex::from_index(path[3]),
+                    ChildIndex::from_index(path[4]),
+                ]
+            })
+            .unwrap_or_else(|| InMemoryKeys::t_derivation_path(self.config.get_coin_type(), 0));
+
+        let key = self.get_t_pubkey(&path).await;
+
+        match key {
+            Ok(key) => compute_taddr(&key, &self.config.base58_pubkey_address(), &[]),
+            Err(e) => format!("Error: {:?}", e),
+        }
+    }
+
+    /// Create a new shielded address with path +1 from the latest one
+    pub async fn add_zaddr(&mut self) -> String {
+        //find the highest path we have
+        let path = self
+            .shielded_addrs
+            .get_mut()
+            .keys()
+            .last()
+            .cloned()
+            .map(|path| {
+                [
+                    ChildIndex::from_index(path[0]),
+                    ChildIndex::from_index(path[1]),
+                    ChildIndex::from_index(path[2]),
+                ]
+            })
+            .unwrap_or_else(|| InMemoryKeys::z_derivation_path(self.config.get_coin_type(), 0));
+
+        let addr = self.get_z_payment_address(&path).await;
+
+        match addr {
+            Ok(addr) => encode_payment_address(self.config.hrp_sapling_address(), &addr),
+            Err(e) => format!("Error: {:?}", e),
         }
     }
 }

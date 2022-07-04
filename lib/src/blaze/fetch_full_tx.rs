@@ -180,7 +180,7 @@ impl FetchFullTxns {
                         );
 
                         // Ensure that we add any new HD addresses
-                        keys.write().await.ensure_hd_taddresses(&output_taddr);
+                        keys.write().await.ensure_hd_taddresses(&output_taddr).await;
                     }
                 }
                 _ => {}

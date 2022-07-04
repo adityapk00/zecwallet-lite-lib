@@ -233,6 +233,30 @@ impl LightClient {
         })
     }
 
+    #[cfg(feature = "ledger-support")]
+    pub fn new_with_ledger(config: &LightClientConfig, latest_block: u64) -> io::Result<Self> {
+        use crate::lightwallet::keys::LedgerKeystore;
+
+        Runtime::new().unwrap().block_on(async move {
+            let ks = LedgerKeystore::new(config.clone()).map_err(|e| io::Error::new(ErrorKind::NotConnected, e))?;
+
+            let l = LightClient {
+                wallet: LightWallet::with_keystore(config.clone(), latest_block, ks),
+                config: config.clone(),
+                mempool_monitor: std::sync::RwLock::new(None),
+                sync_lock: Mutex::new(()),
+                bsync_data: Arc::new(RwLock::new(BlazeSyncData::new(&config))),
+            };
+
+            l.set_wallet_initial_state(latest_block).await;
+
+            info!("Created new wallet with a ledger!");
+            info!("Created LightClient to {}", &config.server);
+
+            Ok(l)
+        })
+    }
+
     /// Create a brand new wallet with a new seed phrase. Will fail if a wallet file
     /// already exists on disk
     pub fn new(config: &LightClientConfig, latest_block: u64) -> io::Result<Self> {
@@ -933,18 +957,8 @@ impl LightClient {
 
         let new_address = {
             let addr = match addr_type {
-                "z" => self
-                    .wallet
-                    .in_memory_keys_mut()
-                    .await
-                    .expect("in memory keystore add zaddress")
-                    .add_zaddr(),
-                "t" => self
-                    .wallet
-                    .in_memory_keys_mut()
-                    .await
-                    .expect("in memory keystore add address")
-                    .add_taddr(),
+                "z" => self.wallet.keys().write().await.add_zaddr().await,
+                "t" => self.wallet.keys().write().await.add_taddr().await,
                 _ => {
                     let e = format!("Unrecognized address type: {}", addr_type);
                     error!("{}", e);
@@ -961,7 +975,8 @@ impl LightClient {
             addr
         };
 
-        self.do_save().await?;
+        //TODO: re-enable this when we have proper checks for ledger support
+        // self.do_save().await?;
 
         Ok(array![new_address])
     }

@@ -491,7 +491,7 @@ impl InMemoryKeys {
         }
     }
 
-    const fn z_derivation_path(coin_type: u32, index: u32) -> [ChildIndex; 3] {
+    pub const fn z_derivation_path(coin_type: u32, index: u32) -> [ChildIndex; 3] {
         [
             ChildIndex::Hardened(32),
             ChildIndex::Hardened(coin_type),
@@ -529,7 +529,7 @@ impl InMemoryKeys {
         encode_payment_address(self.config.hrp_sapling_address(), &newkey.zaddress)
     }
 
-    const fn t_derivation_path(coin_type: u32, index: u32) -> [ChildIndex; 5] {
+    pub const fn t_derivation_path(coin_type: u32, index: u32) -> [ChildIndex; 5] {
         [
             ChildIndex::Hardened(44),
             ChildIndex::Hardened(coin_type),

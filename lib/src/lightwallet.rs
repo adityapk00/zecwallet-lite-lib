@@ -808,8 +808,12 @@ impl LightWallet {
     }
 
     pub async fn is_encrypted(&self) -> bool {
-        //TODO: perhaps to dimilar to `is_unlocked_for_spending`
-        self.in_memory_keys().await.expect("in memory keystore").is_encrypted()
+        match self.in_memory_keys().await {
+            Ok(ks) => ks.is_encrypted(),
+            //for now if it's not in-memory just assume it's unlocked
+            //TODO: do appropriate work here for other keystores
+            _ => false,
+        }
     }
 
     pub async fn add_imported_tk(&self, sk: String) -> String {

@@ -268,6 +268,24 @@ impl Keystores {
             Keystores::Ledger(this) => this.get_all_ivks().await.find(|(k, _)| ivk.0 == k.0).is_some(),
         }
     }
+
+    /// Create a new transparent address
+    pub async fn add_taddr(&mut self) -> String {
+        match self {
+            Keystores::Memory(this) => this.add_taddr(),
+            #[cfg(feature = "ledger-support")]
+            Keystores::Ledger(this) => this.add_taddr().await,
+        }
+    }
+
+    /// Create a new shielded address
+    pub async fn add_zaddr(&mut self) -> String {
+        match self {
+            Keystores::Memory(this) => this.add_zaddr(),
+            #[cfg(feature = "ledger-support")]
+            Keystores::Ledger(this) => this.add_zaddr().await,
+        }
+    }
 }
 
 #[async_trait]
