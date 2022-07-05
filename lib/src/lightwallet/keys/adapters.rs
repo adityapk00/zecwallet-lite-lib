@@ -176,6 +176,19 @@ impl Keystores {
         memory.into_iter().flatten().chain(ledger.into_iter().flatten())
     }
 
+    /// Retrieve all ZAddrs in the keystore which we have the spending key for
+    pub async fn get_all_spendable_zaddresses(&self) -> impl Iterator<Item = String> {
+        //see comment inside `get_all_ivks`
+
+        let (memory, ledger) = match self {
+            Keystores::Memory(this) => (Some(this.get_all_spendable_zaddresses().into_iter()), None),
+            #[cfg(feature = "ledger-support")]
+            Keystores::Ledger(this) => (None, Some(this.get_all_zaddresses().await)),
+        };
+
+        memory.into_iter().flatten().chain(ledger.into_iter().flatten())
+    }
+
     /// Retrieve a HashMap to lookup a public key from the transparent address
     pub async fn get_taddr_to_key_map(&self) -> HashMap<String, SecpPublicKey> {
         match self {
