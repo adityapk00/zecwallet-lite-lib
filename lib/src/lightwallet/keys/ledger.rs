@@ -322,7 +322,7 @@ impl LedgerKeystore {
                     ChildIndex::from_index(path[1]),
                     ChildIndex::from_index(path[2]),
                     ChildIndex::from_index(path[3]),
-                    ChildIndex::from_index(path[4]),
+                    ChildIndex::from_index(path[4] + 1),
                 ]
             })
             .unwrap_or_else(|| InMemoryKeys::t_derivation_path(self.config.get_coin_type(), 0));
@@ -348,7 +348,7 @@ impl LedgerKeystore {
                 [
                     ChildIndex::from_index(path[0]),
                     ChildIndex::from_index(path[1]),
-                    ChildIndex::from_index(path[2]),
+                    ChildIndex::from_index(path[2] + 1),
                 ]
             })
             .unwrap_or_else(|| InMemoryKeys::z_derivation_path(self.config.get_coin_type(), 0));
