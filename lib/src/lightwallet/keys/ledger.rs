@@ -526,7 +526,9 @@ impl<'a, P: Parameters + Send + Sync> Builder for LedgerBuilder<'a, P> {
     }
 
     fn send_change_to(&mut self, ovk: OutgoingViewingKey, to: PaymentAddress) -> &mut Self {
-        todo!()
+        self.inner.send_change_to(ovk, to);
+
+        self
     }
 
     async fn build<TX: TxProver + Send + Sync>(
