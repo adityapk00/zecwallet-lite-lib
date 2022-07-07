@@ -207,7 +207,11 @@ impl LightWallet {
         self.txns.clone()
     }
 
-    pub fn keys(&self) -> Arc<RwLock<Keystores>> {
+    pub fn keys(&self) -> &RwLock<Keystores> {
+        &self.keys
+    }
+
+    pub fn keys_clone(&self) -> Arc<RwLock<Keystores>> {
         self.keys.clone()
     }
 

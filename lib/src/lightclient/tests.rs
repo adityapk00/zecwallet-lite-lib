@@ -1338,7 +1338,7 @@ async fn mempool_clearing() {
         BlockHeight::from_u32(17),
         true,
         0,
-        lc.wallet.keys(),
+        lc.wallet.keys_clone(),
         lc.wallet.txns(),
         Some(140.5),
     )

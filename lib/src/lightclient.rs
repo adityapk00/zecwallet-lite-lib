@@ -445,18 +445,22 @@ impl LightClient {
         // Collect z addresses
         let z_addresses = self
             .wallet
-            .in_memory_keys()
+            .keys()
+            .read()
             .await
-            .expect("in memory keystore")
-            .get_all_zaddresses();
+            .get_all_zaddresses()
+            .await
+            .collect::<Vec<_>>();
 
         // Collect t addresses
         let t_addresses = self
             .wallet
-            .in_memory_keys()
+            .keys()
+            .read()
             .await
-            .expect("in memory keystore")
-            .get_all_taddrs();
+            .get_all_taddrs()
+            .await
+            .collect::<Vec<_>>();
 
         object! {
             "z_addresses" => z_addresses,
@@ -473,13 +477,7 @@ impl LightClient {
     pub async fn do_balance(&self) -> JsonValue {
         // Collect z addresses
         let mut z_addresses = vec![];
-        for zaddress in self
-            .wallet
-            .in_memory_keys()
-            .await
-            .expect("in memory keystore")
-            .get_all_zaddresses()
-        {
+        for zaddress in self.wallet.keys().read().await.get_all_zaddresses().await {
             z_addresses.push(object! {
                 "address" => zaddress.clone(),
                 "zbalance" =>self.wallet.zbalance(Some(zaddress.clone())).await,
@@ -491,13 +489,7 @@ impl LightClient {
 
         // Collect t addresses
         let mut t_addresses = vec![];
-        for taddress in self
-            .wallet
-            .in_memory_keys()
-            .await
-            .expect("in memory keystore")
-            .get_all_taddrs()
-        {
+        for taddress in self.wallet.keys().read().await.get_all_taddrs().await {
             // Get the balance for this address
             let balance = self.wallet.tbalance(Some(taddress.clone())).await;
 
@@ -681,11 +673,11 @@ impl LightClient {
             // First, collect all extfvk's that are spendable (i.e., we have the private key)
             let spendable_address: HashSet<String> = self
                 .wallet
-                .in_memory_keys()
+                .keys()
+                .read()
                 .await
-                .expect("in memory keystore")
                 .get_all_spendable_zaddresses()
-                .into_iter()
+                .await
                 .collect();
 
             // Collect Sapling notes
@@ -1187,7 +1179,7 @@ impl LightClient {
                 let lc1 = lci.clone();
 
                 let h1 = tokio::spawn(async move {
-                    let keys = lc1.wallet.keys();
+                    let keys = lc1.wallet.keys_clone();
                     let wallet_txns = lc1.wallet.txns.clone();
                     let price = lc1.wallet.price.clone();
 
@@ -1411,7 +1403,7 @@ impl LightClient {
         let (taddr_fetcher_handle, taddr_fetcher_tx) = grpc_connector.start_taddr_txn_fetcher().await;
 
         // The processor to fetch the full transactions, and decode the memos and the outgoing metadata
-        let fetch_full_tx_processor = FetchFullTxns::new(&self.config, self.wallet.keys(), self.wallet.txns());
+        let fetch_full_tx_processor = FetchFullTxns::new(&self.config, self.wallet.keys_clone(), self.wallet.txns());
         let (fetch_full_txns_handle, fetch_full_txn_tx, fetch_taddr_txns_tx) = fetch_full_tx_processor
             .start(fulltx_fetcher_tx.clone(), bsync_data.clone())
             .await;
@@ -1423,7 +1415,7 @@ impl LightClient {
             .await;
 
         // Do Trial decryptions of all the sapling outputs, and pass on the successful ones to the update_notes processor
-        let trial_decryptions_processor = TrialDecryptions::new(self.wallet.keys(), self.wallet.txns());
+        let trial_decryptions_processor = TrialDecryptions::new(self.wallet.keys_clone(), self.wallet.txns());
         let (trial_decrypts_handle, trial_decrypts_tx) = trial_decryptions_processor
             .start(bsync_data.clone(), detected_txns_tx, fulltx_fetcher_tx)
             .await;
@@ -1446,7 +1438,7 @@ impl LightClient {
         let earliest_block = block_and_witness_handle.await.unwrap().unwrap();
 
         // 1. Fetch the transparent txns only after reorgs are done.
-        let taddr_txns_handle = FetchTaddrTxns::new(self.wallet.keys())
+        let taddr_txns_handle = FetchTaddrTxns::new(self.wallet.keys_clone())
             .start(start_block, earliest_block, taddr_fetcher_tx, fetch_taddr_txns_tx)
             .await;
 
