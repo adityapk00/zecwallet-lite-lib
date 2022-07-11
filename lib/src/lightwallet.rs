@@ -939,80 +939,75 @@ impl LightWallet {
         let anchor_height = self.get_anchor_height().await;
 
         //TODO: allow any keystore (see usage)
-        let keys = self.in_memory_keys().await.expect("in memory keystore");
+        let keys = self.keys().read().await;
 
-        self.txns
-            .read()
-            .await
-            .current
-            .values()
-            .map(|tx| {
-                tx.notes
-                    .iter()
-                    .filter(|nd| nd.spent.is_none() && nd.unconfirmed_spent.is_none())
-                    .filter(|nd| {
-                        // Check to see if we have this note's spending key.
-                        keys.have_spending_key(&nd.extfvk.fvk.vk.ivk())
-                    })
-                    .filter(|nd| match addr.clone() {
-                        Some(a) => {
-                            a == encode_payment_address(
-                                self.config.hrp_sapling_address(),
-                                &nd.extfvk.fvk.vk.to_payment_address(nd.diversifier).unwrap(),
-                            )
-                        }
-                        None => true,
-                    })
-                    .map(|nd| {
-                        if tx.block <= BlockHeight::from_u32(anchor_height) {
-                            // If confirmed, then unconfirmed is 0
-                            0
-                        } else {
-                            // If confirmed but dont have anchor yet, it is unconfirmed
-                            nd.note.value
-                        }
-                    })
-                    .sum::<u64>()
-            })
-            .sum::<u64>()
+        let txns = self.txns.read().await;
+        let txns = txns.current.values();
+
+        let mut sum = 0;
+        for tx in txns {
+            for nd in tx
+                .notes
+                .iter()
+                .filter(|nd| nd.spent.is_none() && nd.unconfirmed_spent.is_none())
+                .filter(|nd| match addr.clone() {
+                    Some(a) => {
+                        a == encode_payment_address(
+                            self.config.hrp_sapling_address(),
+                            &nd.extfvk.fvk.vk.to_payment_address(nd.diversifier).unwrap(),
+                        )
+                    }
+                    None => true,
+                })
+            {
+                // Check to see if we have this note's spending key.
+                if keys.have_spending_key(&nd.extfvk.fvk.vk.ivk()).await {
+                    if tx.block > BlockHeight::from_u32(anchor_height) {
+                        // If confirmed but dont have anchor yet, it is unconfirmed
+                        sum += nd.note.value
+                    }
+                }
+            }
+        }
+
+        sum
     }
 
     pub async fn spendable_zbalance(&self, addr: Option<String>) -> u64 {
         let anchor_height = self.get_anchor_height().await;
 
         //TODO: allow any keystore (see usage)
-        let keys = self.in_memory_keys().await.expect("in memory keystore");
+        let keys = self.keys().read().await;
 
-        self.txns
-            .read()
-            .await
-            .current
-            .values()
-            .map(|tx| {
-                if tx.block <= BlockHeight::from_u32(anchor_height) {
-                    tx.notes
-                        .iter()
-                        .filter(|nd| nd.spent.is_none() && nd.unconfirmed_spent.is_none())
-                        .filter(|nd| {
-                            // Check to see if we have this note's spending key and witnesses
-                            keys.have_spending_key(&nd.extfvk.fvk.vk.ivk()) && nd.witnesses.len() > 0
-                        })
-                        .filter(|nd| match addr.as_ref() {
-                            Some(a) => {
-                                *a == encode_payment_address(
-                                    self.config.hrp_sapling_address(),
-                                    &nd.extfvk.fvk.vk.to_payment_address(nd.diversifier).unwrap(),
-                                )
-                            }
-                            None => true,
-                        })
-                        .map(|nd| nd.note.value)
-                        .sum::<u64>()
-                } else {
-                    0
+        let mut sum = 0;
+        let txns = self.txns.read().await;
+        let txns = txns.current.values();
+
+        for tx in txns {
+            if tx.block <= BlockHeight::from_u32(anchor_height) {
+                for nd in tx
+                    .notes
+                    .iter()
+                    .filter(|nd| nd.spent.is_none() && nd.unconfirmed_spent.is_none())
+                    .filter(|nd| match addr.as_ref() {
+                        Some(a) => {
+                            *a == encode_payment_address(
+                                self.config.hrp_sapling_address(),
+                                &nd.extfvk.fvk.vk.to_payment_address(nd.diversifier).unwrap(),
+                            )
+                        }
+                        None => true,
+                    })
+                {
+                    // Check to see if we have this note's spending key and witnesses
+                    if keys.have_spending_key(&nd.extfvk.fvk.vk.ivk()).await && nd.witnesses.len() > 0 {
+                        sum += nd.note.value;
+                    }
                 }
-            })
-            .sum::<u64>()
+            }
+        }
+
+        sum
     }
 
     pub async fn remove_unused_taddrs(&self) {
