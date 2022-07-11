@@ -545,6 +545,7 @@ impl<'a, P: Parameters + Send + Sync> Builder for LedgerBuilder<'a, P> {
                 &mut OsRng,
                 self.target_height.into(),
                 consensus_branch_id,
+                progress,
             )
             .await?;
 
