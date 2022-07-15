@@ -32,6 +32,11 @@ macro_rules! configure_clapapp {
                 .value_name("seed_phrase")
                 .help("Create a new wallet with the given 24-word seed phrase. Will fail if wallet already exists")
                 .takes_value(true))
+            .arg(Arg::with_name("ledger")
+                 .long("ledger")
+                 .value_name("ledger")
+                 .help("Create a new wallet by connecting to a ledger")
+                 .takes_value(false))
             .arg(Arg::with_name("birthday")
                 .long("birthday")
                 .value_name("birthday")
@@ -75,12 +80,14 @@ pub fn startup(
     birthday: u64,
     first_sync: bool,
     print_updates: bool,
+    ledger: bool,
 ) -> io::Result<(Sender<(String, Vec<String>)>, Receiver<String>)> {
     // Try to get the configuration
     let (config, latest_block_height) = LightClientConfig::create(server.clone())?;
 
     let lightclient = match seed {
         Some(phrase) => Arc::new(LightClient::new_from_phrase(phrase, &config, birthday, false)?),
+        None if ledger => Arc::new(LightClient::new_with_ledger(&config, birthday)?),
         None => {
             if config.wallet_exists() {
                 Arc::new(LightClient::read_from_disk(&config)?)
@@ -193,11 +200,10 @@ pub fn start_interactive(command_tx: Sender<(String, Vec<String>)>, resp_rx: Rec
     }
 }
 
-pub fn command_loop(lightclient: Arc<LightClient>) -> (Sender<(String, Vec<String>)>, Receiver<String>) {
+pub fn command_loop(lc: Arc<LightClient>) -> (Sender<(String, Vec<String>)>, Receiver<String>) {
     let (command_tx, command_rx) = channel::<(String, Vec<String>)>();
     let (resp_tx, resp_rx) = channel::<String>();
 
-    let lc = lightclient.clone();
     std::thread::spawn(move || {
         LightClient::start_mempool_monitor(lc.clone());
 

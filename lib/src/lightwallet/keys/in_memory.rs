@@ -3,7 +3,6 @@ use std::{
     io::{self, Error, ErrorKind, Read, Write},
 };
 
-use bip39::Seed;
 use bip39::{Language, Mnemonic};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use rand::{rngs::OsRng, Rng};
@@ -15,7 +14,7 @@ use zcash_client_backend::{
 use zcash_primitives::{
     consensus::{BlockHeight, Network},
     legacy::TransparentAddress,
-    primitives::PaymentAddress,
+    primitives::{PaymentAddress, SaplingIvk},
     serialize::Vector,
     zip32::{ChildIndex, ExtendedFullViewingKey, ExtendedSpendingKey},
 };
@@ -23,14 +22,15 @@ use zcash_primitives::{
 use crate::{
     lightclient::lightclient_config::{LightClientConfig, GAP_RULE_UNUSED_ADDRESSES},
     lightwallet::{
-        keys::{double_sha256, InMemoryBuilder, InsecureKeystore, Keystore, ToBase58Check},
+        keys::{double_sha256, InsecureKeystore, Keystore, KeystoreBuilderLifetime, ToBase58Check},
         utils,
         wallettkey::{WalletTKey, WalletTKeyType},
         walletzkey::{WalletZKey, WalletZKeyType},
     },
 };
 
-use super::KeystoreBuilderLifetime;
+mod builder;
+pub use builder::{BuilderError as InMemoryBuilderError, InMemoryBuilder};
 
 // Manages all the keys in the wallet. Note that the RwLock for this is present in `lightwallet.rs`, so we'll
 // assume that this is already gone through a RwLock, so we don't lock any of the individual fields.
@@ -380,10 +380,10 @@ impl InMemoryKeys {
         self.tkeys.iter().map(|tk| tk.address.clone()).collect::<Vec<_>>()
     }
 
-    pub fn have_spending_key(&self, extfvk: &ExtendedFullViewingKey) -> bool {
+    pub fn have_spending_key(&self, ivk: &SaplingIvk) -> bool {
         self.zkeys
             .iter()
-            .find(|zk| zk.extfvk == *extfvk)
+            .find(|zk| zk.extfvk.fvk.vk.ivk().0 == ivk.0)
             .map(|zk| zk.have_spending_key())
             .unwrap_or(false)
     }
@@ -411,8 +411,22 @@ impl InMemoryKeys {
             .collect()
     }
 
+    pub fn get_taddr_to_key_map(&self) -> HashMap<String, secp256k1::PublicKey> {
+        let secp = secp256k1::Secp256k1::signing_only();
+
+        self.tkeys
+            .iter()
+            .map(|tk| {
+                (
+                    tk.address.clone(),
+                    secp256k1::PublicKey::from_secret_key(&secp, &tk.key.unwrap()),
+                )
+            })
+            .collect()
+    }
+
     // If one of the last 'n' taddress was used, ensure we add the next HD taddress to the wallet.
-    pub fn ensure_hd_taddresses(&mut self, address: &String) {
+    pub fn ensure_hd_taddresses(&mut self, address: &str) {
         if GAP_RULE_UNUSED_ADDRESSES == 0 {
             return;
         }
@@ -445,7 +459,7 @@ impl InMemoryKeys {
     }
 
     // If one of the last 'n' zaddress was used, ensure we add the next HD zaddress to the wallet
-    pub fn ensure_hd_zaddresses(&mut self, address: &String) {
+    pub fn ensure_hd_zaddresses(&mut self, address: &str) {
         if GAP_RULE_UNUSED_ADDRESSES == 0 {
             return;
         }
@@ -477,7 +491,7 @@ impl InMemoryKeys {
         }
     }
 
-    const fn z_derivation_path(coin_type: u32, index: u32) -> [ChildIndex; 3] {
+    pub const fn z_derivation_path(coin_type: u32, index: u32) -> [ChildIndex; 3] {
         [
             ChildIndex::Hardened(32),
             ChildIndex::Hardened(coin_type),
@@ -515,7 +529,7 @@ impl InMemoryKeys {
         encode_payment_address(self.config.hrp_sapling_address(), &newkey.zaddress)
     }
 
-    const fn t_derivation_path(coin_type: u32, index: u32) -> [ChildIndex; 5] {
+    pub const fn t_derivation_path(coin_type: u32, index: u32) -> [ChildIndex; 5] {
         [
             ChildIndex::Hardened(44),
             ChildIndex::Hardened(coin_type),

@@ -27,6 +27,7 @@ pub fn main() {
     let maybe_server = matches.value_of("server").map(|s| s.to_string());
 
     let seed = matches.value_of("seed").map(|s| s.to_string());
+    let ledger = matches.is_present("ledger");
     let maybe_birthday = matches.value_of("birthday");
 
     if seed.is_some() && maybe_birthday.is_none() {
@@ -57,7 +58,7 @@ pub fn main() {
 
     let nosync = matches.is_present("nosync");
 
-    let startup_chan = startup(server, seed, birthday, !nosync, command.is_none());
+    let startup_chan = startup(server, seed, birthday, !nosync, command.is_none(), ledger);
     let (command_tx, resp_rx) = match startup_chan {
         Ok(c) => c,
         Err(e) => {
