@@ -17,7 +17,7 @@ use zcash_primitives::{
     legacy::TransparentAddress,
     memo::MemoBytes,
     merkle_tree::MerklePath,
-    primitives::{Diversifier, Note, PaymentAddress, SaplingIvk, ViewingKey},
+    primitives::{Diversifier, Note, Nullifier, PaymentAddress, SaplingIvk},
     sapling::Node,
     transaction::{
         components::{Amount, OutPoint, TxOut},
@@ -262,6 +262,31 @@ impl LedgerKeystore {
     pub async fn first_shielded(&self) -> Option<[u32; 3]> {
         //retrieve the first key
         self.shielded_addrs.read().await.keys().next().cloned()
+    }
+
+    pub async fn compute_nullifier(
+        &self,
+        ivk: &SaplingIvk,
+        position: u64,
+        commitment: bls12_381::Scalar,
+    ) -> Result<Nullifier, LedgerError> {
+        let path = {
+            let ivk_repr = ivk.to_repr();
+
+            let guard = self.shielded_addrs.read().await;
+            guard
+                .iter()
+                .find(move |(_, (k, _))| k.to_repr() == ivk_repr)
+                .map(|(p, _)| *p)
+                .ok_or(LedgerError::KeyNotFound)?
+        };
+
+        let commitment = commitment.to_bytes();
+
+        self.app
+            .get_nullifier(path[2], position, &commitment)
+            .await
+            .map_err(Into::into)
     }
 }
 
@@ -679,8 +704,8 @@ impl<'a, P: Parameters> LedgerBuilder<'a, P> {
     }
 
     /// Attempt to lookup the corresponding path in the keystore, given a viewing key
-    pub fn lookup_shielded_from_ivk(&mut self, vk: &ViewingKey) -> Result<[u32; 3], LedgerError> {
-        let ivk = vk.ivk().to_repr();
+    pub fn lookup_shielded_from_ivk(&mut self, ivk: &SaplingIvk) -> Result<[u32; 3], LedgerError> {
+        let ivk = ivk.to_repr();
 
         self.keystore
             .shielded_addrs
@@ -708,7 +733,7 @@ impl<'a, P: Parameters + Send + Sync> Builder for LedgerBuilder<'a, P> {
 
     fn add_sapling_spend(
         &mut self,
-        key: &ViewingKey,
+        key: &SaplingIvk,
         diversifier: Diversifier,
         note: Note,
         merkle_path: MerklePath<Node>,

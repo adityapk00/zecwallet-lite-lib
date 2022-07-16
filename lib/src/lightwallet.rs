@@ -227,7 +227,7 @@ impl LightWallet {
     }
 
     pub fn note_address(hrp: &str, note: &SaplingNoteData) -> Option<String> {
-        match note.extfvk.fvk.vk.to_payment_address(note.diversifier) {
+        match note.ivk.to_payment_address(note.diversifier) {
             Some(pa) => Some(encode_payment_address(hrp, &pa)),
             None => None,
         }
@@ -409,7 +409,7 @@ impl LightWallet {
                         Some(a) => {
                             *a == encode_payment_address(
                                 self.config.hrp_sapling_address(),
-                                &nd.extfvk.fvk.vk.to_payment_address(nd.diversifier).unwrap(),
+                                &nd.ivk.to_payment_address(nd.diversifier).unwrap(),
                             )
                         }
                         None => true,
@@ -467,7 +467,7 @@ impl LightWallet {
                             Some(a) => {
                                 *a == encode_payment_address(
                                     self.config.hrp_sapling_address(),
-                                    &nd.extfvk.fvk.vk.to_payment_address(nd.diversifier).unwrap(),
+                                    &nd.ivk.to_payment_address(nd.diversifier).unwrap(),
                                 )
                             }
                             None => true,
@@ -752,9 +752,10 @@ impl LightWallet {
         // Start collecting sapling funds at every allowed offset
         for anchor_offset in &self.config.anchor_offset {
             //TODO: allow any keystore (see usage)
-            let keys = self.in_memory_keys().await.expect("in memory keystore");
+            let keys = self.keys().read().await;
 
-            let mut candidate_notes = self
+            let mut candidate_notes = Vec::new();
+            for (txid, note) in self
                 .txns
                 .read()
                 .await
@@ -762,17 +763,18 @@ impl LightWallet {
                 .iter()
                 .flat_map(|(txid, tx)| tx.notes.iter().map(move |note| (*txid, note)))
                 .filter(|(_, note)| note.note.value > 0)
-                .filter_map(|(txid, note)| {
-                    // Filter out notes that are already spent
-                    if note.spent.is_some() || note.unconfirmed_spent.is_some() {
-                        None
-                    } else {
-                        // Get the spending key for the selected fvk, if we have it
-                        let extsk = keys.get_extsk_for_extfvk(&note.extfvk);
-                        SpendableNote::from(txid, note, *anchor_offset as usize, &extsk)
+                // Filter out notes that are already spent
+                .filter(|(_, note)| note.spent.is_none() && note.unconfirmed_spent.is_none())
+            {
+                // select the note if we have the spending key for it
+                if keys.have_spending_key(&note.ivk).await {
+                    //None will return if it's actually not spendable
+                    if let Some(spendable) = SpendableNote::from(txid, note, *anchor_offset as usize, &note.ivk) {
+                        candidate_notes.push(spendable);
                     }
-                })
-                .collect::<Vec<_>>();
+                }
+            }
+
             candidate_notes.sort_by(|a, b| b.note.value.cmp(&a.note.value));
 
             // Select the minimum number of notes required to satisfy the target value
@@ -952,14 +954,14 @@ impl LightWallet {
                     Some(a) => {
                         a == encode_payment_address(
                             self.config.hrp_sapling_address(),
-                            &nd.extfvk.fvk.vk.to_payment_address(nd.diversifier).unwrap(),
+                            &nd.ivk.to_payment_address(nd.diversifier).unwrap(),
                         )
                     }
                     None => true,
                 })
             {
                 // Check to see if we have this note's spending key.
-                if keys.have_spending_key(&nd.extfvk.fvk.vk.ivk()).await {
+                if keys.have_spending_key(&nd.ivk).await {
                     if tx.block > BlockHeight::from_u32(anchor_height) {
                         // If confirmed but dont have anchor yet, it is unconfirmed
                         sum += nd.note.value
@@ -991,14 +993,14 @@ impl LightWallet {
                         Some(a) => {
                             *a == encode_payment_address(
                                 self.config.hrp_sapling_address(),
-                                &nd.extfvk.fvk.vk.to_payment_address(nd.diversifier).unwrap(),
+                                &nd.ivk.to_payment_address(nd.diversifier).unwrap(),
                             )
                         }
                         None => true,
                     })
                 {
                     // Check to see if we have this note's spending key and witnesses
-                    if keys.have_spending_key(&nd.extfvk.fvk.vk.ivk()).await && nd.witnesses.len() > 0 {
+                    if keys.have_spending_key(&nd.ivk).await && nd.witnesses.len() > 0 {
                         sum += nd.note.value;
                     }
                 }
@@ -1047,8 +1049,13 @@ impl LightWallet {
         //TODO: allow any keystore (see usage)
         let mut keys = self.in_memory_keys_mut().await.expect("in memory keystore");
 
-        let zaddrs = keys.get_all_zaddresses();
-        if zaddrs.len() <= 1 {
+        let ivks = keys
+            .get_all_extfvks()
+            .into_iter()
+            .map(|extfvk| extfvk.fvk.vk.ivk())
+            .collect::<Vec<_>>();
+
+        if ivks.len() <= 1 {
             return;
         }
 
@@ -1059,11 +1066,9 @@ impl LightWallet {
             .current
             .values()
             .flat_map(|wtx| {
-                wtx.notes.iter().map(|n| {
-                    let (_, pa) = n.extfvk.default_address().unwrap();
-                    let zaddr = encode_payment_address(self.config.hrp_sapling_address(), &pa);
-                    zaddrs.iter().position(|za| *za == zaddr).unwrap_or(zaddrs.len())
-                })
+                wtx.notes
+                    .iter()
+                    .map(|n| ivks.iter().position(|ivk| ivk.0 == n.ivk.0).unwrap_or(ivks.len()))
             })
             .max();
 
@@ -1240,7 +1245,7 @@ impl LightWallet {
 
         for selected in notes.iter() {
             if let Err(e) = builder.add_sapling_spend(
-                &ExtendedFullViewingKey::from(&selected.extsk).fvk.vk,
+                &selected.ivk,
                 selected.diversifier,
                 selected.note.clone(),
                 selected.witness.path().unwrap(),

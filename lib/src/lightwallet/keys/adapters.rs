@@ -13,7 +13,7 @@ use zcash_primitives::{
     consensus::{BlockHeight, BranchId, Network, Parameters},
     keys::OutgoingViewingKey,
     legacy::TransparentAddress,
-    primitives::{PaymentAddress, SaplingIvk},
+    primitives::{Note, Nullifier, PaymentAddress, SaplingIvk},
     transaction::Transaction,
 };
 
@@ -304,7 +304,11 @@ impl Keystores {
         match self {
             Self::Memory(this) => this.have_spending_key(ivk),
             #[cfg(feature = "ledger-support")]
-            Self::Ledger(this) => this.get_all_ivks().await.find(|(k, _)| ivk.0 == k.0).is_some(),
+            Self::Ledger(this) => this
+                .get_all_ivks()
+                .await
+                .find(|(k, _)| ivk.to_repr() == k.to_repr())
+                .is_some(),
         }
     }
 
@@ -323,6 +327,26 @@ impl Keystores {
             Self::Memory(this) => this.add_zaddr(),
             #[cfg(feature = "ledger-support")]
             Self::Ledger(this) => this.add_zaddr().await,
+        }
+    }
+
+    /// Compute the note nullifier
+    pub async fn get_note_nullifier(&self, ivk: &SaplingIvk, position: u64, note: &Note) -> Result<Nullifier, String> {
+        match self {
+            Self::Memory(this) => {
+                let extfvk = this
+                    .get_all_extfvks()
+                    .into_iter()
+                    .find(|extfvk| extfvk.fvk.vk.ivk().to_repr() == ivk.to_repr())
+                    .ok_or(format!("Error: unknown key"))?;
+
+                Ok(note.nf(&extfvk.fvk.vk, position))
+            }
+            #[cfg(feature = "ledger-support")]
+            Self::Ledger(this) => this
+                .compute_nullifier(ivk, position, note.cmu())
+                .await
+                .map_err(|e| format!("Error: unable to compute note nullifier: {:?}", e)),
         }
     }
 }
@@ -378,7 +402,7 @@ impl<'ks, P: Parameters + Send + Sync> Builder for Builders<'ks, P> {
 
     fn add_sapling_spend(
         &mut self,
-        key: &zcash_primitives::primitives::ViewingKey,
+        key: &zcash_primitives::primitives::SaplingIvk,
         diversifier: zcash_primitives::primitives::Diversifier,
         note: zcash_primitives::primitives::Note,
         merkle_path: zcash_primitives::merkle_tree::MerklePath<zcash_primitives::sapling::Node>,

@@ -7,7 +7,7 @@ use zcash_primitives::{
     legacy::TransparentAddress,
     memo::MemoBytes,
     merkle_tree::MerklePath,
-    primitives::{Diversifier, Note, PaymentAddress, ViewingKey},
+    primitives::{Diversifier, Note, PaymentAddress, SaplingIvk, ViewingKey},
     sapling::Node,
     transaction::{
         builder::{Builder as ZBuilder, Error as ZBuilderError},
@@ -55,12 +55,12 @@ impl<'a, P: Parameters + Send + Sync> Builder for InMemoryBuilder<'a, P> {
 
     fn add_sapling_spend(
         &mut self,
-        key: &ViewingKey,
+        key: &SaplingIvk,
         diversifier: Diversifier,
         note: Note,
         merkle_path: MerklePath<Node>,
     ) -> Result<&mut Self, Self::Error> {
-        let key = key.ivk().to_repr();
+        let key = key.to_repr();
         let key = self
             .keystore
             .zkeys

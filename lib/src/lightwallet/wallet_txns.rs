@@ -127,7 +127,7 @@ impl WalletTxns {
             tx.notes.iter_mut().for_each(|nd| {
                 nd.have_spending_key = spendable_keys
                     .iter()
-                    .find(|ivk| ivk.0 == nd.extfvk.fvk.vk.ivk().0)
+                    .find(|ivk| ivk.to_repr() == nd.ivk.to_repr())
                     .is_some();
                 if !nd.have_spending_key {
                     nd.witnesses.clear();
@@ -490,7 +490,7 @@ impl WalletTxns {
         timestamp: u64,
         note: Note,
         to: PaymentAddress,
-        extfvk: &ExtendedFullViewingKey,
+        ivk: &SaplingIvk,
     ) {
         // Check if this is a change note
         let is_change = self.total_funds_spent_in(&txid) > 0;
@@ -502,7 +502,7 @@ impl WalletTxns {
         match wtx.notes.iter_mut().find(|n| n.note == note) {
             None => {
                 let nd = SaplingNoteData {
-                    extfvk: extfvk.clone(),
+                    ivk: SaplingIvk(ivk.0.clone()),
                     diversifier: *to.diversifier(),
                     note,
                     witnesses: WitnessCache::empty(),
@@ -528,7 +528,8 @@ impl WalletTxns {
         timestamp: u64,
         note: Note,
         to: PaymentAddress,
-        extfvk: &ExtendedFullViewingKey,
+        ivk: &SaplingIvk,
+        nullifier: Nullifier,
         have_spending_key: bool,
         witness: IncrementalWitness<Node>,
     ) {
@@ -539,7 +540,6 @@ impl WalletTxns {
         // Update the block height, in case this was a mempool or unconfirmed tx.
         wtx.block = height;
 
-        let nullifier = note.nf(&extfvk.fvk.vk, witness.position() as u64);
         let witnesses = if have_spending_key {
             WitnessCache::new(vec![witness], u64::from(height))
         } else {
@@ -549,7 +549,7 @@ impl WalletTxns {
         match wtx.notes.iter_mut().find(|n| n.nullifier == nullifier) {
             None => {
                 let nd = SaplingNoteData {
-                    extfvk: extfvk.clone(),
+                    ivk: SaplingIvk(ivk.0.clone()),
                     diversifier: *to.diversifier(),
                     note,
                     witnesses,
