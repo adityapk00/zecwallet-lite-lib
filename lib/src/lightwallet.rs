@@ -582,9 +582,9 @@ impl LightWallet {
         info!("Reading wallet version {}", version);
 
         let keys = if version <= 14 {
-            InMemoryKeys::read_old(version, &mut reader, config)
+            InMemoryKeys::read_old(version, &mut reader, config).map(Into::into)
         } else {
-            InMemoryKeys::read(&mut reader, config)
+            Keystores::read(&mut reader, config).await
         }?;
 
         let mut blocks = Vector::read(&mut reader, |r| BlockData::read(r))?;
@@ -638,11 +638,7 @@ impl LightWallet {
         // If version <= 8, adjust the "is_spendable" status of each note data
         if version <= 8 {
             // Collect all spendable keys
-            let spendable_keys: Vec<_> = keys
-                .get_all_extfvks()
-                .into_iter()
-                .filter(|extfvk| keys.have_spending_key(&extfvk.fvk.vk.ivk()))
-                .collect();
+            let spendable_keys = keys.get_all_spendable_ivks().await.collect();
 
             txns.adjust_spendable_status(spendable_keys);
         }
@@ -654,7 +650,7 @@ impl LightWallet {
         };
 
         let mut lw = Self {
-            keys: Arc::new(RwLock::new(keys.into())),
+            keys: Arc::new(RwLock::new(keys)),
             txns: Arc::new(RwLock::new(txns)),
             blocks: Arc::new(RwLock::new(blocks)),
             config: config.clone(),

@@ -9,7 +9,7 @@ use zcash_primitives::{
     consensus::BlockHeight,
     memo::Memo,
     merkle_tree::IncrementalWitness,
-    primitives::{Note, Nullifier, PaymentAddress},
+    primitives::{Note, Nullifier, PaymentAddress, SaplingIvk},
     sapling::Node,
     serialize::Vector,
     transaction::{components::TxOut, TxId},
@@ -122,10 +122,13 @@ impl WalletTxns {
         self.current.clear();
     }
 
-    pub fn adjust_spendable_status(&mut self, spendable_keys: Vec<ExtendedFullViewingKey>) {
+    pub fn adjust_spendable_status(&mut self, spendable_keys: Vec<SaplingIvk>) {
         self.current.values_mut().for_each(|tx| {
             tx.notes.iter_mut().for_each(|nd| {
-                nd.have_spending_key = spendable_keys.contains(&nd.extfvk);
+                nd.have_spending_key = spendable_keys
+                    .iter()
+                    .find(|ivk| ivk.0 == nd.extfvk.fvk.vk.ivk().0)
+                    .is_some();
                 if !nd.have_spending_key {
                     nd.witnesses.clear();
                 }

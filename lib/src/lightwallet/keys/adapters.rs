@@ -189,6 +189,32 @@ impl Keystores {
         memory.into_iter().flatten().chain(ledger.into_iter().flatten())
     }
 
+    /// Retrieve all IVKs in the keystore which we have the spending key for
+    pub async fn get_all_spendable_ivks(&self) -> impl Iterator<Item = SaplingIvk> {
+        //see comment inside `get_all_ivks`
+
+        let (memory, ledger) = match self {
+            Self::Memory(this) => (
+                Some(
+                    this.get_all_extfvks()
+                        .into_iter()
+                        .map(|extfvk| extfvk.fvk.vk.ivk())
+                        .filter(|key| this.have_spending_key(&key))
+                        //we collect to avoid borrowing this
+                        // and causing lifetime issues
+                        .collect::<Vec<_>>()
+                        .into_iter(),
+                ),
+                None,
+            ),
+            #[cfg(feature = "ledger-support")]
+            //with the ledger all known ivks are spendable
+            Self::Ledger(this) => (None, Some(this.get_all_ivks().await.map(|(ivk, _)| ivk))),
+        };
+
+        memory.into_iter().flatten().chain(ledger.into_iter().flatten())
+    }
+
     /// Retrieve a HashMap to lookup a public key from the transparent address
     pub async fn get_taddr_to_key_map(&self) -> HashMap<String, SecpPublicKey> {
         match self {
@@ -299,7 +325,10 @@ impl Keystores {
             Self::Ledger(this) => this.add_zaddr().await,
         }
     }
+}
 
+//serialization stuff
+impl Keystores {
     /// Indicates whether the keystore is ready to be saved to file
     pub fn writable(&self) -> bool {
         match self {
@@ -309,6 +338,7 @@ impl Keystores {
         }
     }
 
+    /// Serialize keystore to writer
     pub async fn write<W: io::Write>(&self, mut writer: W) -> io::Result<()> {
         use byteorder::WriteBytesExt;
 
@@ -322,6 +352,22 @@ impl Keystores {
                 writer.write_u8(1)?;
                 this.write(writer).await
             }
+        }
+    }
+
+    /// Deserialize keystore from reader
+    pub async fn read<R: io::Read>(mut reader: R, config: &LightClientConfig) -> io::Result<Self> {
+        use byteorder::ReadBytesExt;
+        let variant = reader.read_u8()?;
+
+        match variant {
+            0 => InMemoryKeys::read(reader, config).map(Into::into),
+            #[cfg(feature = "ledger-support")]
+            1 => LedgerKeystore::read(reader, config).await.map(Into::into),
+            _ => Err(io::Error::new(
+                ErrorKind::InvalidData,
+                format!("Unknown keystore variant"),
+            )),
         }
     }
 }

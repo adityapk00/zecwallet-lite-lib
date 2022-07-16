@@ -56,6 +56,24 @@ pub enum LedgerError {
     KeyNotFound,
 }
 
+impl From<LedgerError> for std::io::Error {
+    fn from(err: LedgerError) -> Self {
+        use std::io::ErrorKind;
+
+        let kind = match &err {
+            LedgerError::InitializationError(_) => ErrorKind::InvalidInput,
+            LedgerError::Ledger(_) => ErrorKind::BrokenPipe,
+            LedgerError::Builder(_)
+            | LedgerError::InvalidPathLength(_)
+            | LedgerError::InvalidPublicKey
+            | LedgerError::DiversifierIndexOverflow
+            | LedgerError::KeyNotFound => ErrorKind::InvalidData,
+        };
+
+        std::io::Error::new(kind, err)
+    }
+}
+
 //we use btreemap so we can get an ordered list when iterating by key
 pub struct LedgerKeystore {
     pub config: LightClientConfig,
@@ -459,6 +477,112 @@ impl LedgerKeystore {
         }
 
         Ok(())
+    }
+
+    pub async fn read<R: std::io::Read>(mut reader: R, config: &LightClientConfig) -> std::io::Result<Self> {
+        use byteorder::{LittleEndian, ReadBytesExt};
+        use std::io::{self, ErrorKind};
+
+        //read version and verify it's compatible with the code
+        let version = reader.read_u64::<LittleEndian>()?;
+        if version > Self::VERSION {
+            let e = format!(
+                "Don't know how to read ledger wallet version {}. Do you have the latest version?",
+                version
+            );
+            return Err(io::Error::new(ErrorKind::InvalidData, e));
+        }
+
+        //retrieve the ledger id and verify it matches with the aocnnected device
+        let ledger_id = {
+            let mut buf = [0; secp256k1::constants::PUBLIC_KEY_SIZE];
+            reader.read_exact(&mut buf)?;
+
+            SecpPublicKey::from_slice(&buf).map_err(|e| {
+                io::Error::new(
+                    ErrorKind::InvalidData,
+                    format!("Bad public key stored for ledger id: {:?}", e),
+                )
+            })?
+        };
+
+        let app = Self::connect_ledger()?;
+        if ledger_id != Self::get_id(&app).await? {
+            return Err(io::Error::new(
+                ErrorKind::InvalidInput,
+                format!("Detected different ledger than used previously"),
+            ));
+        }
+
+        //read the transparent paths
+        // the keys will be retrieved one by one from the device
+        let transparent_addrs_len = reader.read_u64::<LittleEndian>()?;
+        let mut transparent_addrs = BTreeMap::new();
+        for _ in 0..transparent_addrs_len {
+            let path = {
+                let mut buf = [0; 4 * 5];
+                reader.read_exact(&mut buf)?;
+
+                let path_bytes: [[u8; 4]; 5] = bytemuck::cast(buf);
+                [
+                    u32::from_le_bytes(path_bytes[0]),
+                    u32::from_le_bytes(path_bytes[1]),
+                    u32::from_le_bytes(path_bytes[2]),
+                    u32::from_le_bytes(path_bytes[3]),
+                    u32::from_le_bytes(path_bytes[4]),
+                ]
+            };
+
+            let key = app
+                .get_address_unshielded(&BIP44Path(path), false)
+                .await
+                .map_err(LedgerError::Ledger)?
+                .public_key;
+            let key = SecpPublicKey::from_slice(&key).map_err(|_| LedgerError::InvalidPublicKey)?;
+
+            transparent_addrs.insert(path, key);
+        }
+
+        //read the transparent paths
+        // the keys and the diversifiers
+        // will be retrieved one by one from the device
+        let shielded_addrs_len = reader.read_u64::<LittleEndian>()?;
+        let mut shielded_addrs = BTreeMap::new();
+        for _ in 0..shielded_addrs_len {
+            let path = {
+                let mut buf = [0; 4 * 3];
+                reader.read_exact(&mut buf)?;
+
+                let path_bytes: [[u8; 4]; 3] = bytemuck::cast(buf);
+                [
+                    u32::from_le_bytes(path_bytes[0]),
+                    u32::from_le_bytes(path_bytes[1]),
+                    u32::from_le_bytes(path_bytes[2]),
+                ]
+            };
+
+            //ZIP32 uses fixed path, so the actual index
+            // is only the latest element
+            let idx = path[2];
+
+            let ivk = app
+                .get_ivk(idx)
+                .await
+                .map(|ivk| SaplingIvk(ivk))
+                .map_err(LedgerError::Ledger)?;
+
+            let div = Self::get_default_div_from(&app, idx).await?;
+
+            shielded_addrs.insert(path, (ivk, div));
+        }
+
+        Ok(Self {
+            config: config.clone(),
+            app,
+            ledger_id,
+            transparent_addrs: RwLock::new(transparent_addrs),
+            shielded_addrs: RwLock::new(shielded_addrs),
+        })
     }
 }
 
