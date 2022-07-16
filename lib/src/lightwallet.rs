@@ -543,7 +543,7 @@ impl LightWallet {
     }
 
     pub fn serialized_version() -> u64 {
-        return 24;
+        return 25;
     }
 
     pub fn new(
@@ -681,20 +681,20 @@ impl LightWallet {
     pub async fn write<W: Write>(&self, mut writer: W) -> io::Result<()> {
         {
             //enclose in scope to avoid holding read lock after these checks
-            let keys = self.in_memory_keys().await?;
+            let keys = self.keys().read().await;
 
-            if keys.encrypted && keys.unlocked {
+            if !keys.writable() {
                 return Err(Error::new(
                     ErrorKind::InvalidInput,
-                    format!("Cannot write while wallet is unlocked while encrypted."),
+                    format!("Wallet wasn't ready to be written."),
                 ));
             }
 
             // Write the version
             writer.write_u64::<LittleEndian>(Self::serialized_version())?;
 
-            // Write all the keys
-            keys.write(&mut writer)?;
+            // Write the keystore
+            keys.write(&mut writer).await?;
         }
 
         Vector::write(&mut writer, &self.blocks.read().await, |w, b| b.write(w))?;

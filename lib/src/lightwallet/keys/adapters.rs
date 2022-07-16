@@ -105,9 +105,9 @@ impl Keystores {
 impl Keystores {
     pub fn config(&self) -> LightClientConfig {
         match self {
-            Keystores::Memory(this) => this.config(),
+            Self::Memory(this) => this.config(),
             #[cfg(feature = "ledger-support")]
-            Keystores::Ledger(this) => this.config.clone(),
+            Self::Ledger(this) => this.config.clone(),
         }
     }
 
@@ -126,12 +126,12 @@ impl Keystores {
         // at the bottom expression
 
         let (memory, ledger) = match self {
-            Keystores::Memory(this) => (
+            Self::Memory(this) => (
                 Some(this.get_all_extfvks().into_iter().map(|key| key.fvk.vk.ivk())),
                 None,
             ),
             #[cfg(feature = "ledger-support")]
-            Keystores::Ledger(this) => (None, Some(this.get_all_ivks().await.map(|(ivk, _)| ivk))),
+            Self::Ledger(this) => (None, Some(this.get_all_ivks().await.map(|(ivk, _)| ivk))),
         };
 
         memory.into_iter().flatten().chain(ledger.into_iter().flatten())
@@ -142,9 +142,9 @@ impl Keystores {
         //see comment inside `get_all_ivks`
 
         let (memory, ledger) = match self {
-            Keystores::Memory(this) => (Some(this.get_all_extfvks().into_iter().map(|k| k.fvk.ovk)), None),
+            Self::Memory(this) => (Some(this.get_all_extfvks().into_iter().map(|k| k.fvk.ovk)), None),
             #[cfg(feature = "ledger-support")]
-            Keystores::Ledger(this) => (None, Some(this.get_all_ovks().await)),
+            Self::Ledger(this) => (None, Some(this.get_all_ovks().await)),
         };
 
         memory.into_iter().flatten().chain(ledger.into_iter().flatten())
@@ -155,9 +155,9 @@ impl Keystores {
         //see comment inside `get_all_ivks`
 
         let (memory, ledger) = match self {
-            Keystores::Memory(this) => (Some(this.get_all_taddrs().into_iter()), None),
+            Self::Memory(this) => (Some(this.get_all_taddrs().into_iter()), None),
             #[cfg(feature = "ledger-support")]
-            Keystores::Ledger(this) => (None, Some(this.get_all_taddrs().await)),
+            Self::Ledger(this) => (None, Some(this.get_all_taddrs().await)),
         };
 
         memory.into_iter().flatten().chain(ledger.into_iter().flatten())
@@ -168,9 +168,9 @@ impl Keystores {
         //see comment inside `get_all_ivks`
 
         let (memory, ledger) = match self {
-            Keystores::Memory(this) => (Some(this.get_all_zaddresses().into_iter()), None),
+            Self::Memory(this) => (Some(this.get_all_zaddresses().into_iter()), None),
             #[cfg(feature = "ledger-support")]
-            Keystores::Ledger(this) => (None, Some(this.get_all_zaddresses().await)),
+            Self::Ledger(this) => (None, Some(this.get_all_zaddresses().await)),
         };
 
         memory.into_iter().flatten().chain(ledger.into_iter().flatten())
@@ -181,9 +181,9 @@ impl Keystores {
         //see comment inside `get_all_ivks`
 
         let (memory, ledger) = match self {
-            Keystores::Memory(this) => (Some(this.get_all_spendable_zaddresses().into_iter()), None),
+            Self::Memory(this) => (Some(this.get_all_spendable_zaddresses().into_iter()), None),
             #[cfg(feature = "ledger-support")]
-            Keystores::Ledger(this) => (None, Some(this.get_all_zaddresses().await)),
+            Self::Ledger(this) => (None, Some(this.get_all_zaddresses().await)),
         };
 
         memory.into_iter().flatten().chain(ledger.into_iter().flatten())
@@ -210,9 +210,9 @@ impl Keystores {
     /// Returns the first stored shielded OVK and payment address of the keystore
     pub async fn first_zkey(&self) -> Option<(OutgoingViewingKey, PaymentAddress)> {
         match self {
-            Keystores::Memory(this) => this.zkeys.get(0).map(|zk| (zk.extfvk.fvk.ovk, zk.zaddress.clone())),
+            Self::Memory(this) => this.zkeys.get(0).map(|zk| (zk.extfvk.fvk.ovk, zk.zaddress.clone())),
             #[cfg(feature = "ledger-support")]
-            Keystores::Ledger(this) => {
+            Self::Ledger(this) => {
                 let path = this.first_shielded().await?;
                 let ovk = this.get_ovk_of(&path).await.ok()?;
                 let zaddr = this
@@ -227,9 +227,9 @@ impl Keystores {
     /// Perform bech32 encoding of the given address
     pub fn encode_zaddr(&self, addr: PaymentAddress) -> String {
         let hrp = match self {
-            Keystores::Memory(this) => this.config().hrp_sapling_address(),
+            Self::Memory(this) => this.config().hrp_sapling_address(),
             #[cfg(feature = "ledger-support")]
-            Keystores::Ledger(this) => this.config.hrp_sapling_address(),
+            Self::Ledger(this) => this.config.hrp_sapling_address(),
         };
 
         encode_payment_address(hrp, &addr)
@@ -238,9 +238,9 @@ impl Keystores {
     /// Compute the transparent address of a pubkey hash
     pub fn address_from_pubkeyhash(&self, addr: Option<TransparentAddress>) -> Option<String> {
         let prefix = match self {
-            Keystores::Memory(this) => this.config().base58_pubkey_address(),
+            Self::Memory(this) => this.config().base58_pubkey_address(),
             #[cfg(feature = "ledger-support")]
-            Keystores::Ledger(this) => this.config.base58_pubkey_address(),
+            Self::Ledger(this) => this.config.base58_pubkey_address(),
         };
 
         match addr {
@@ -256,9 +256,9 @@ impl Keystores {
     /// This is for the transparent addresses
     pub async fn ensure_hd_taddresses(&mut self, addr: &str) {
         match self {
-            Keystores::Memory(this) => this.ensure_hd_taddresses(addr),
+            Self::Memory(this) => this.ensure_hd_taddresses(addr),
             #[cfg(feature = "ledger-support")]
-            Keystores::Ledger(this) => this.ensure_hd_taddresses(addr).await,
+            Self::Ledger(this) => this.ensure_hd_taddresses(addr).await,
         }
     }
 
@@ -267,36 +267,61 @@ impl Keystores {
     /// This is for the shielded addresses
     pub async fn ensure_hd_zaddresses(&mut self, addr: &str) {
         match self {
-            Keystores::Memory(this) => this.ensure_hd_zaddresses(addr),
+            Self::Memory(this) => this.ensure_hd_zaddresses(addr),
             #[cfg(feature = "ledger-support")]
-            Keystores::Ledger(this) => this.ensure_hd_zaddresses(addr).await,
+            Self::Ledger(this) => this.ensure_hd_zaddresses(addr).await,
         }
     }
 
     /// Ensure we have the spending key of the given viewing key in the keystore
     pub async fn have_spending_key(&self, ivk: &SaplingIvk) -> bool {
         match self {
-            Keystores::Memory(this) => this.have_spending_key(ivk),
+            Self::Memory(this) => this.have_spending_key(ivk),
             #[cfg(feature = "ledger-support")]
-            Keystores::Ledger(this) => this.get_all_ivks().await.find(|(k, _)| ivk.0 == k.0).is_some(),
+            Self::Ledger(this) => this.get_all_ivks().await.find(|(k, _)| ivk.0 == k.0).is_some(),
         }
     }
 
     /// Create a new transparent address
     pub async fn add_taddr(&mut self) -> String {
         match self {
-            Keystores::Memory(this) => this.add_taddr(),
+            Self::Memory(this) => this.add_taddr(),
             #[cfg(feature = "ledger-support")]
-            Keystores::Ledger(this) => this.add_taddr().await,
+            Self::Ledger(this) => this.add_taddr().await,
         }
     }
 
     /// Create a new shielded address
     pub async fn add_zaddr(&mut self) -> String {
         match self {
-            Keystores::Memory(this) => this.add_zaddr(),
+            Self::Memory(this) => this.add_zaddr(),
             #[cfg(feature = "ledger-support")]
-            Keystores::Ledger(this) => this.add_zaddr().await,
+            Self::Ledger(this) => this.add_zaddr().await,
+        }
+    }
+
+    /// Indicates whether the keystore is ready to be saved to file
+    pub fn writable(&self) -> bool {
+        match self {
+            Self::Memory(this) => !(this.encrypted && this.unlocked),
+            #[cfg(feature = "ledger-support")]
+            Self::Ledger(_) => true,
+        }
+    }
+
+    pub async fn write<W: io::Write>(&self, mut writer: W) -> io::Result<()> {
+        use byteorder::WriteBytesExt;
+
+        match self {
+            Self::Memory(this) => {
+                writer.write_u8(0)?;
+                this.write(writer)
+            }
+            #[cfg(feature = "ledger-support")]
+            Self::Ledger(this) => {
+                writer.write_u8(1)?;
+                this.write(writer).await
+            }
         }
     }
 }

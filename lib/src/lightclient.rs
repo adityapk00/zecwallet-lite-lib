@@ -238,7 +238,9 @@ impl LightClient {
         use crate::lightwallet::keys::LedgerKeystore;
 
         Runtime::new().unwrap().block_on(async move {
-            let ks = LedgerKeystore::new(config.clone()).map_err(|e| io::Error::new(ErrorKind::NotConnected, e))?;
+            let ks = LedgerKeystore::new(config.clone())
+                .await
+                .map_err(|e| io::Error::new(ErrorKind::NotConnected, e))?;
 
             let l = LightClient {
                 wallet: LightWallet::with_keystore(config.clone(), latest_block, ks),

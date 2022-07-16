@@ -61,6 +61,13 @@ pub struct LedgerKeystore {
     pub config: LightClientConfig,
 
     app: ZcashApp<TransportNativeHID>,
+    //this is a public key with a specific path
+    // used to "identify" a ledger
+    // this is useful to detect when a different ledger
+    // is connected instead of the one used with the keystore
+    // originally
+    ledger_id: SecpPublicKey,
+
     transparent_addrs: RwLock<BTreeMap<[u32; 5], SecpPublicKey>>,
 
     //associated a path with an ivk and the default diversifier
@@ -68,15 +75,41 @@ pub struct LedgerKeystore {
 }
 
 impl LedgerKeystore {
-    pub fn new(config: LightClientConfig) -> Result<Self, LedgerError> {
+    /// Retrieve the connected ledger's "ID"
+    ///
+    /// Uses 44'/1'/0/0/0 derivation path
+    async fn get_id(app: &ZcashApp<TransportNativeHID>) -> Result<SecpPublicKey, LedgerError> {
+        app.get_address_unshielded(&BIP44Path([44 + 0x8000_0000, 1 + 0x8000_0000, 0, 0, 0]), false)
+            .await
+            .map_err(Into::into)
+            .and_then(|addr| SecpPublicKey::from_slice(&addr.public_key).map_err(|_| LedgerError::InvalidPublicKey))
+    }
+
+    /// Attempt to create a handle to a ledger zcash ap
+    ///
+    /// Will attempt to connect to the first available device,
+    /// but won't verify that the correct app is open or that is a "known" device
+    fn connect_ledger() -> Result<ZcashApp<TransportNativeHID>, LedgerError> {
         let hidapi = ledger_transport_hid::hidapi::HidApi::new().map_err(|hid| LedgerHIDError::Hid(hid))?;
 
         let transport = TransportNativeHID::new(&hidapi)?;
         let app = ZcashApp::new(transport);
 
+        Ok(app)
+    }
+
+    /// Create a new [`LedgerKeystore`]
+    ///
+    /// Will error if there are no available devices or
+    /// if the wrong app is open on the ledger device.
+    pub async fn new(config: LightClientConfig) -> Result<Self, LedgerError> {
+        let app = Self::connect_ledger()?;
+        let ledger_id = Self::get_id(&app).await?;
+
         Ok(Self {
             app,
             config,
+            ledger_id,
             transparent_addrs: Default::default(),
             shielded_addrs: Default::default(),
         })
@@ -104,15 +137,15 @@ impl LedgerKeystore {
             .and_then(|(ivk, d)| ivk.to_payment_address(*d))
     }
 
-    /// Retrieve the default diversifier for a given path
+    /// Retrieve the defualt diversifier from a given device and path
     ///
-    /// The default diversifier is the first valid diversifier starting with
-    /// index 0
-    pub async fn get_default_div(&self, idx: u32) -> Result<Diversifier, LedgerError> {
+    /// The defualt diversifier is the first valid diversifier starting
+    /// from index 0
+    async fn get_default_div_from(app: &ZcashApp<TransportNativeHID>, idx: u32) -> Result<Diversifier, LedgerError> {
         let mut index = DiversifierIndex::new();
 
         loop {
-            let divs = self.app.get_div_list(idx, &index.0).await?;
+            let divs = app.get_div_list(idx, &index.0).await?;
             let divs: &[[u8; 11]] = bytemuck::cast_slice(&divs);
 
             //find the first div that is not all 0s
@@ -121,14 +154,19 @@ impl LedgerKeystore {
                 if div != &[0; 11] {
                     return Ok(Diversifier(*div));
                 }
-            }
 
-            //increment the index by 20, as the app calculates
-            // 20 diversifiers
-            for _ in 0..20 {
+                //increment the index for each diversifier returned
                 index.increment().map_err(|_| LedgerError::DiversifierIndexOverflow)?;
             }
         }
+    }
+
+    /// Retrieve the default diversifier for a given path
+    ///
+    /// The default diversifier is the first valid diversifier starting from
+    /// index 0
+    pub async fn get_default_div(&self, idx: u32) -> Result<Diversifier, LedgerError> {
+        Self::get_default_div_from(&self.app, idx).await
     }
 
     /// Retrieve all the cached/known IVKs
@@ -207,7 +245,10 @@ impl LedgerKeystore {
         //retrieve the first key
         self.shielded_addrs.read().await.keys().next().cloned()
     }
+}
 
+//in-memory keystore compatibility methods
+impl LedgerKeystore {
     /// Retrieve the OVK of a given path
     pub async fn get_ovk_of(&self, path: &[u32; 3]) -> Result<OutgoingViewingKey, LedgerError> {
         let ovk = self.app.get_ovk(path[2]).await?;
@@ -359,6 +400,65 @@ impl LedgerKeystore {
             Ok(addr) => encode_payment_address(self.config.hrp_sapling_address(), &addr),
             Err(e) => format!("Error: {:?}", e),
         }
+    }
+}
+
+//serialization and deserialization stuff
+impl LedgerKeystore {
+    /// Keystore version
+    ///
+    /// Increase for any change in the format
+    const VERSION: u64 = 0;
+
+    /// Serialize the keystore to a writer
+    pub async fn write<W: std::io::Write>(&self, mut writer: W) -> std::io::Result<()> {
+        use byteorder::{LittleEndian, WriteBytesExt};
+
+        writer.write_u64::<LittleEndian>(Self::VERSION)?;
+
+        //write the ledger "id"
+        let id = self.ledger_id.serialize();
+        writer.write_all(&id)?;
+
+        //write the transparent paths
+        let transparent_paths = self
+            .transparent_addrs
+            .read()
+            .await
+            .keys()
+            .map(|path| {
+                [
+                    path[0].to_le_bytes(),
+                    path[1].to_le_bytes(),
+                    path[2].to_le_bytes(),
+                    path[3].to_le_bytes(),
+                    path[4].to_le_bytes(),
+                ]
+            })
+            .map(|path_bytes| bytemuck::cast(path_bytes))
+            .collect::<Vec<[u8; 4 * 5]>>();
+
+        writer.write_u64::<LittleEndian>(transparent_paths.len() as u64)?;
+        for path in transparent_paths {
+            writer.write_all(&path)?;
+        }
+
+        //write the shielded paths
+        let shielded_paths = self
+            .shielded_addrs
+            .read()
+            .await
+            .keys()
+            .map(|path| [path[0].to_le_bytes(), path[1].to_le_bytes(), path[2].to_le_bytes()])
+            .map(|path_bytes| bytemuck::cast(path_bytes))
+            .collect::<Vec<[u8; 4 * 3]>>();
+
+        writer.write_u64::<LittleEndian>(shielded_paths.len() as u64)?;
+        for path in shielded_paths {
+            writer.write_all(&path)?;
+        }
+
+        Ok(())
     }
 }
 
@@ -522,11 +622,14 @@ impl<'a, P: Parameters + Send + Sync> Builder for LedgerBuilder<'a, P> {
 
     fn add_transparent_output(&mut self, to: &TransparentAddress, value: Amount) -> Result<&mut Self, Self::Error> {
         self.inner.add_transparent_output(to, value)?;
+
         Ok(self)
     }
 
     fn send_change_to(&mut self, ovk: OutgoingViewingKey, to: PaymentAddress) -> &mut Self {
-        todo!()
+        self.inner.send_change_to(ovk, to);
+
+        self
     }
 
     async fn build<TX: TxProver + Send + Sync>(
