@@ -583,6 +583,8 @@ impl LightWallet {
 
         let keys = if version <= 14 {
             InMemoryKeys::read_old(version, &mut reader, config).map(Into::into)
+        } else if version <= 24 {
+            InMemoryKeys::read(&mut reader, config).map(Into::into)
         } else {
             Keystores::read(&mut reader, config).await
         }?;
@@ -1397,32 +1399,39 @@ impl LightWallet {
     }
 
     pub async fn encrypt(&self, passwd: String) -> io::Result<()> {
-        //TODO: allow any keystore (see usage)
-        self.in_memory_keys_mut()
-            .await
-            .expect("in memory keystore")
-            .encrypt(passwd)
+        match self.in_memory_keys_mut().await {
+            Ok(mut ks) => ks.encrypt(passwd),
+            //for now if it's not in-memory just assume it's unlocked
+            //TODO: do appropriate work here for other keystores
+            _ => Ok(()),
+        }
     }
 
     pub async fn lock(&self) -> io::Result<()> {
-        //TODO: allow any keystore (see usage)
-        self.in_memory_keys_mut().await.expect("in memory keystore").lock()
+        match self.in_memory_keys_mut().await {
+            Ok(mut ks) => ks.lock(),
+            //for now if it's not in-memory just assume it's unlocked
+            //TODO: do appropriate work here for other keystores
+            _ => Ok(()),
+        }
     }
 
     pub async fn unlock(&self, passwd: String) -> io::Result<()> {
-        //TODO: allow any keystore (see usage)
-        self.in_memory_keys_mut()
-            .await
-            .expect("in memory keystore")
-            .unlock(passwd)
+        match self.in_memory_keys_mut().await {
+            Ok(mut ks) => ks.unlock(passwd),
+            //for now if it's not in-memory just assume it's unlocked
+            //TODO: do appropriate work here for other keystores
+            _ => Ok(()),
+        }
     }
 
     pub async fn remove_encryption(&self, passwd: String) -> io::Result<()> {
-        //TODO: allow any keystore (see usage)
-        self.in_memory_keys_mut()
-            .await
-            .expect("in memory keystore")
-            .remove_encryption(passwd)
+        match self.in_memory_keys_mut().await {
+            Ok(mut ks) => ks.remove_encryption(passwd),
+            //for now if it's not in-memory just assume it's unlocked
+            //TODO: do appropriate work here for other keystores
+            _ => Ok(()),
+        }
     }
 }
 
