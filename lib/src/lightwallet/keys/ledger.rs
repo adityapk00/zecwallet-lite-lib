@@ -268,7 +268,7 @@ impl LedgerKeystore {
         &self,
         ivk: &SaplingIvk,
         position: u64,
-        commitment: bls12_381::Scalar,
+        commitment: jubjub::AffinePoint,
     ) -> Result<Nullifier, LedgerError> {
         let path = {
             let ivk_repr = ivk.to_repr();

@@ -330,6 +330,41 @@ impl Keystores {
         }
     }
 
+    //this is the same code as Note's cm_full_point
+    fn compute_note_commitment(note: &Note) -> jubjub::SubgroupPoint {
+        use byteorder::{LittleEndian, WriteBytesExt};
+        use group::GroupEncoding;
+        use zcash_primitives::{
+            constants::NOTE_COMMITMENT_RANDOMNESS_GENERATOR,
+            pedersen_hash::{pedersen_hash, Personalization},
+        };
+
+        // Calculate the note contents, as bytes
+        let mut note_contents = vec![];
+
+        // Writing the value in little endian
+        (&mut note_contents).write_u64::<LittleEndian>(note.value).unwrap();
+
+        // Write g_d
+        note_contents.extend_from_slice(&note.g_d.to_bytes());
+
+        // Write pk_d
+        note_contents.extend_from_slice(&note.pk_d.to_bytes());
+
+        assert_eq!(note_contents.len(), 32 + 32 + 8);
+
+        // Compute the Pedersen hash of the note contents
+        let hash_of_contents = pedersen_hash(
+            Personalization::NoteCommitment,
+            note_contents
+                .into_iter()
+                .flat_map(|byte| (0..8).map(move |i| ((byte >> i) & 1) == 1)),
+        );
+
+        // Compute final commitment
+        (NOTE_COMMITMENT_RANDOMNESS_GENERATOR * note.rcm()) + hash_of_contents
+    }
+
     /// Compute the note nullifier
     pub async fn get_note_nullifier(&self, ivk: &SaplingIvk, position: u64, note: &Note) -> Result<Nullifier, String> {
         match self {
@@ -343,10 +378,15 @@ impl Keystores {
                 Ok(note.nf(&extfvk.fvk.vk, position))
             }
             #[cfg(feature = "ledger-support")]
-            Self::Ledger(this) => this
-                .compute_nullifier(ivk, position, note.cmu())
-                .await
-                .map_err(|e| format!("Error: unable to compute note nullifier: {:?}", e)),
+            Self::Ledger(this) => {
+                use group::Curve;
+                let commitment = Self::compute_note_commitment(note);
+                let commitment: &jubjub::ExtendedPoint = (&commitment).into();
+
+                this.compute_nullifier(ivk, position, commitment.to_affine())
+                    .await
+                    .map_err(|e| format!("Error: unable to compute note nullifier: {:?}", e))
+            }
         }
     }
 }
