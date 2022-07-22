@@ -13,7 +13,7 @@ use zcash_primitives::{
     consensus::{BlockHeight, BranchId, Network, Parameters},
     keys::OutgoingViewingKey,
     legacy::TransparentAddress,
-    primitives::{PaymentAddress, SaplingIvk},
+    primitives::{Note, Nullifier, PaymentAddress, SaplingIvk},
     transaction::Transaction,
 };
 
@@ -105,9 +105,9 @@ impl Keystores {
 impl Keystores {
     pub fn config(&self) -> LightClientConfig {
         match self {
-            Keystores::Memory(this) => this.config(),
+            Self::Memory(this) => this.config(),
             #[cfg(feature = "ledger-support")]
-            Keystores::Ledger(this) => this.config.clone(),
+            Self::Ledger(this) => this.config.clone(),
         }
     }
 
@@ -126,12 +126,12 @@ impl Keystores {
         // at the bottom expression
 
         let (memory, ledger) = match self {
-            Keystores::Memory(this) => (
+            Self::Memory(this) => (
                 Some(this.get_all_extfvks().into_iter().map(|key| key.fvk.vk.ivk())),
                 None,
             ),
             #[cfg(feature = "ledger-support")]
-            Keystores::Ledger(this) => (None, Some(this.get_all_ivks().await.map(|(ivk, _)| ivk))),
+            Self::Ledger(this) => (None, Some(this.get_all_ivks().await.map(|(ivk, _)| ivk))),
         };
 
         memory.into_iter().flatten().chain(ledger.into_iter().flatten())
@@ -142,9 +142,9 @@ impl Keystores {
         //see comment inside `get_all_ivks`
 
         let (memory, ledger) = match self {
-            Keystores::Memory(this) => (Some(this.get_all_extfvks().into_iter().map(|k| k.fvk.ovk)), None),
+            Self::Memory(this) => (Some(this.get_all_extfvks().into_iter().map(|k| k.fvk.ovk)), None),
             #[cfg(feature = "ledger-support")]
-            Keystores::Ledger(this) => (None, Some(this.get_all_ovks().await)),
+            Self::Ledger(this) => (None, Some(this.get_all_ovks().await)),
         };
 
         memory.into_iter().flatten().chain(ledger.into_iter().flatten())
@@ -155,9 +155,9 @@ impl Keystores {
         //see comment inside `get_all_ivks`
 
         let (memory, ledger) = match self {
-            Keystores::Memory(this) => (Some(this.get_all_taddrs().into_iter()), None),
+            Self::Memory(this) => (Some(this.get_all_taddrs().into_iter()), None),
             #[cfg(feature = "ledger-support")]
-            Keystores::Ledger(this) => (None, Some(this.get_all_taddrs().await)),
+            Self::Ledger(this) => (None, Some(this.get_all_taddrs().await)),
         };
 
         memory.into_iter().flatten().chain(ledger.into_iter().flatten())
@@ -168,9 +168,9 @@ impl Keystores {
         //see comment inside `get_all_ivks`
 
         let (memory, ledger) = match self {
-            Keystores::Memory(this) => (Some(this.get_all_zaddresses().into_iter()), None),
+            Self::Memory(this) => (Some(this.get_all_zaddresses().into_iter()), None),
             #[cfg(feature = "ledger-support")]
-            Keystores::Ledger(this) => (None, Some(this.get_all_zaddresses().await)),
+            Self::Ledger(this) => (None, Some(this.get_all_zaddresses().await)),
         };
 
         memory.into_iter().flatten().chain(ledger.into_iter().flatten())
@@ -181,9 +181,35 @@ impl Keystores {
         //see comment inside `get_all_ivks`
 
         let (memory, ledger) = match self {
-            Keystores::Memory(this) => (Some(this.get_all_spendable_zaddresses().into_iter()), None),
+            Self::Memory(this) => (Some(this.get_all_spendable_zaddresses().into_iter()), None),
             #[cfg(feature = "ledger-support")]
-            Keystores::Ledger(this) => (None, Some(this.get_all_zaddresses().await)),
+            Self::Ledger(this) => (None, Some(this.get_all_zaddresses().await)),
+        };
+
+        memory.into_iter().flatten().chain(ledger.into_iter().flatten())
+    }
+
+    /// Retrieve all IVKs in the keystore which we have the spending key for
+    pub async fn get_all_spendable_ivks(&self) -> impl Iterator<Item = SaplingIvk> {
+        //see comment inside `get_all_ivks`
+
+        let (memory, ledger) = match self {
+            Self::Memory(this) => (
+                Some(
+                    this.get_all_extfvks()
+                        .into_iter()
+                        .map(|extfvk| extfvk.fvk.vk.ivk())
+                        .filter(|key| this.have_spending_key(&key))
+                        //we collect to avoid borrowing this
+                        // and causing lifetime issues
+                        .collect::<Vec<_>>()
+                        .into_iter(),
+                ),
+                None,
+            ),
+            #[cfg(feature = "ledger-support")]
+            //with the ledger all known ivks are spendable
+            Self::Ledger(this) => (None, Some(this.get_all_ivks().await.map(|(ivk, _)| ivk))),
         };
 
         memory.into_iter().flatten().chain(ledger.into_iter().flatten())
@@ -210,9 +236,9 @@ impl Keystores {
     /// Returns the first stored shielded OVK and payment address of the keystore
     pub async fn first_zkey(&self) -> Option<(OutgoingViewingKey, PaymentAddress)> {
         match self {
-            Keystores::Memory(this) => this.zkeys.get(0).map(|zk| (zk.extfvk.fvk.ovk, zk.zaddress.clone())),
+            Self::Memory(this) => this.zkeys.get(0).map(|zk| (zk.extfvk.fvk.ovk, zk.zaddress.clone())),
             #[cfg(feature = "ledger-support")]
-            Keystores::Ledger(this) => {
+            Self::Ledger(this) => {
                 let path = this.first_shielded().await?;
                 let ovk = this.get_ovk_of(&path).await.ok()?;
                 let zaddr = this
@@ -227,9 +253,9 @@ impl Keystores {
     /// Perform bech32 encoding of the given address
     pub fn encode_zaddr(&self, addr: PaymentAddress) -> String {
         let hrp = match self {
-            Keystores::Memory(this) => this.config().hrp_sapling_address(),
+            Self::Memory(this) => this.config().hrp_sapling_address(),
             #[cfg(feature = "ledger-support")]
-            Keystores::Ledger(this) => this.config.hrp_sapling_address(),
+            Self::Ledger(this) => this.config.hrp_sapling_address(),
         };
 
         encode_payment_address(hrp, &addr)
@@ -238,9 +264,9 @@ impl Keystores {
     /// Compute the transparent address of a pubkey hash
     pub fn address_from_pubkeyhash(&self, addr: Option<TransparentAddress>) -> Option<String> {
         let prefix = match self {
-            Keystores::Memory(this) => this.config().base58_pubkey_address(),
+            Self::Memory(this) => this.config().base58_pubkey_address(),
             #[cfg(feature = "ledger-support")]
-            Keystores::Ledger(this) => this.config.base58_pubkey_address(),
+            Self::Ledger(this) => this.config.base58_pubkey_address(),
         };
 
         match addr {
@@ -256,9 +282,9 @@ impl Keystores {
     /// This is for the transparent addresses
     pub async fn ensure_hd_taddresses(&mut self, addr: &str) {
         match self {
-            Keystores::Memory(this) => this.ensure_hd_taddresses(addr),
+            Self::Memory(this) => this.ensure_hd_taddresses(addr),
             #[cfg(feature = "ledger-support")]
-            Keystores::Ledger(this) => this.ensure_hd_taddresses(addr).await,
+            Self::Ledger(this) => this.ensure_hd_taddresses(addr).await,
         }
     }
 
@@ -267,36 +293,145 @@ impl Keystores {
     /// This is for the shielded addresses
     pub async fn ensure_hd_zaddresses(&mut self, addr: &str) {
         match self {
-            Keystores::Memory(this) => this.ensure_hd_zaddresses(addr),
+            Self::Memory(this) => this.ensure_hd_zaddresses(addr),
             #[cfg(feature = "ledger-support")]
-            Keystores::Ledger(this) => this.ensure_hd_zaddresses(addr).await,
+            Self::Ledger(this) => this.ensure_hd_zaddresses(addr).await,
         }
     }
 
     /// Ensure we have the spending key of the given viewing key in the keystore
     pub async fn have_spending_key(&self, ivk: &SaplingIvk) -> bool {
         match self {
-            Keystores::Memory(this) => this.have_spending_key(ivk),
+            Self::Memory(this) => this.have_spending_key(ivk),
             #[cfg(feature = "ledger-support")]
-            Keystores::Ledger(this) => this.get_all_ivks().await.find(|(k, _)| ivk.0 == k.0).is_some(),
+            Self::Ledger(this) => this
+                .get_all_ivks()
+                .await
+                .find(|(k, _)| ivk.to_repr() == k.to_repr())
+                .is_some(),
         }
     }
 
     /// Create a new transparent address
     pub async fn add_taddr(&mut self) -> String {
         match self {
-            Keystores::Memory(this) => this.add_taddr(),
+            Self::Memory(this) => this.add_taddr(),
             #[cfg(feature = "ledger-support")]
-            Keystores::Ledger(this) => this.add_taddr().await,
+            Self::Ledger(this) => this.add_taddr().await,
         }
     }
 
     /// Create a new shielded address
     pub async fn add_zaddr(&mut self) -> String {
         match self {
-            Keystores::Memory(this) => this.add_zaddr(),
+            Self::Memory(this) => this.add_zaddr(),
             #[cfg(feature = "ledger-support")]
-            Keystores::Ledger(this) => this.add_zaddr().await,
+            Self::Ledger(this) => this.add_zaddr().await,
+        }
+    }
+
+    //this is the same code as Note's cm_full_point
+    fn compute_note_commitment(note: &Note) -> jubjub::SubgroupPoint {
+        use byteorder::{LittleEndian, WriteBytesExt};
+        use group::GroupEncoding;
+        use zcash_primitives::{
+            constants::NOTE_COMMITMENT_RANDOMNESS_GENERATOR,
+            pedersen_hash::{pedersen_hash, Personalization},
+        };
+
+        // Calculate the note contents, as bytes
+        let mut note_contents = vec![];
+
+        // Writing the value in little endian
+        (&mut note_contents).write_u64::<LittleEndian>(note.value).unwrap();
+
+        // Write g_d
+        note_contents.extend_from_slice(&note.g_d.to_bytes());
+
+        // Write pk_d
+        note_contents.extend_from_slice(&note.pk_d.to_bytes());
+
+        assert_eq!(note_contents.len(), 32 + 32 + 8);
+
+        // Compute the Pedersen hash of the note contents
+        let hash_of_contents = pedersen_hash(
+            Personalization::NoteCommitment,
+            note_contents
+                .into_iter()
+                .flat_map(|byte| (0..8).map(move |i| ((byte >> i) & 1) == 1)),
+        );
+
+        // Compute final commitment
+        (NOTE_COMMITMENT_RANDOMNESS_GENERATOR * note.rcm()) + hash_of_contents
+    }
+
+    /// Compute the note nullifier
+    pub async fn get_note_nullifier(&self, ivk: &SaplingIvk, position: u64, note: &Note) -> Result<Nullifier, String> {
+        match self {
+            Self::Memory(this) => {
+                let extfvk = this
+                    .get_all_extfvks()
+                    .into_iter()
+                    .find(|extfvk| extfvk.fvk.vk.ivk().to_repr() == ivk.to_repr())
+                    .ok_or(format!("Error: unknown key"))?;
+
+                Ok(note.nf(&extfvk.fvk.vk, position))
+            }
+            #[cfg(feature = "ledger-support")]
+            Self::Ledger(this) => {
+                use group::Curve;
+                let commitment = Self::compute_note_commitment(note);
+                let commitment: &jubjub::ExtendedPoint = (&commitment).into();
+
+                this.compute_nullifier(ivk, position, commitment.to_affine())
+                    .await
+                    .map_err(|e| format!("Error: unable to compute note nullifier: {:?}", e))
+            }
+        }
+    }
+}
+
+//serialization stuff
+impl Keystores {
+    /// Indicates whether the keystore is ready to be saved to file
+    pub fn writable(&self) -> bool {
+        match self {
+            Self::Memory(this) => !(this.encrypted && this.unlocked),
+            #[cfg(feature = "ledger-support")]
+            Self::Ledger(_) => true,
+        }
+    }
+
+    /// Serialize keystore to writer
+    pub async fn write<W: io::Write>(&self, mut writer: W) -> io::Result<()> {
+        use byteorder::WriteBytesExt;
+
+        match self {
+            Self::Memory(this) => {
+                writer.write_u8(0)?;
+                this.write(writer)
+            }
+            #[cfg(feature = "ledger-support")]
+            Self::Ledger(this) => {
+                writer.write_u8(1)?;
+                this.write(writer).await
+            }
+        }
+    }
+
+    /// Deserialize keystore from reader
+    pub async fn read<R: io::Read>(mut reader: R, config: &LightClientConfig) -> io::Result<Self> {
+        use byteorder::ReadBytesExt;
+        let variant = reader.read_u8()?;
+
+        match variant {
+            0 => InMemoryKeys::read(reader, config).map(Into::into),
+            #[cfg(feature = "ledger-support")]
+            1 => LedgerKeystore::read(reader, config).await.map(Into::into),
+            _ => Err(io::Error::new(
+                ErrorKind::InvalidData,
+                format!("Unknown keystore variant"),
+            )),
         }
     }
 }
@@ -307,7 +442,7 @@ impl<'ks, P: Parameters + Send + Sync> Builder for Builders<'ks, P> {
 
     fn add_sapling_spend(
         &mut self,
-        key: &zcash_primitives::primitives::ViewingKey,
+        key: &zcash_primitives::primitives::SaplingIvk,
         diversifier: zcash_primitives::primitives::Diversifier,
         note: zcash_primitives::primitives::Note,
         merkle_path: zcash_primitives::merkle_tree::MerklePath<zcash_primitives::sapling::Node>,

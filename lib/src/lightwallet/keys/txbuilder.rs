@@ -6,7 +6,7 @@ use zcash_primitives::{
     legacy::TransparentAddress,
     memo::MemoBytes,
     merkle_tree::MerklePath,
-    primitives::{Diversifier, Note, PaymentAddress, ViewingKey},
+    primitives::{Diversifier, Note, PaymentAddress, SaplingIvk},
     sapling::Node,
     transaction::{
         components::{Amount, OutPoint, TxOut},
@@ -48,7 +48,7 @@ pub trait Builder {
 
     fn add_sapling_spend(
         &mut self,
-        key: &ViewingKey,
+        key: &SaplingIvk,
         diversifier: Diversifier,
         note: Note,
         merkle_path: MerklePath<Node>,

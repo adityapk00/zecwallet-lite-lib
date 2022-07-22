@@ -383,7 +383,7 @@ impl InMemoryKeys {
     pub fn have_spending_key(&self, ivk: &SaplingIvk) -> bool {
         self.zkeys
             .iter()
-            .find(|zk| zk.extfvk.fvk.vk.ivk().0 == ivk.0)
+            .find(|zk| zk.extfvk.fvk.vk.ivk().to_repr() == ivk.to_repr())
             .map(|zk| zk.have_spending_key())
             .unwrap_or(false)
     }

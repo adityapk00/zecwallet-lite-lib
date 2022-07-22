@@ -234,14 +234,27 @@ impl LightClient {
     }
 
     #[cfg(feature = "ledger-support")]
-    pub fn new_with_ledger(config: &LightClientConfig, latest_block: u64) -> io::Result<Self> {
+    pub fn with_ledger(config: &LightClientConfig, latest_block: u64) -> io::Result<Self> {
         use crate::lightwallet::keys::LedgerKeystore;
 
+        if config.wallet_exists() {}
+
         Runtime::new().unwrap().block_on(async move {
-            let ks = LedgerKeystore::new(config.clone()).map_err(|e| io::Error::new(ErrorKind::NotConnected, e))?;
+            let wallet = if config.wallet_exists() {
+                let path = config.get_wallet_path();
+                let mut file = BufReader::new(File::open(path)?);
+
+                LightWallet::read(&mut file, config).await?
+            } else {
+                let ks = LedgerKeystore::new(config.clone())
+                    .await
+                    .map_err(|e| io::Error::new(ErrorKind::NotConnected, e))?;
+
+                LightWallet::with_keystore(config.clone(), latest_block, ks)
+            };
 
             let l = LightClient {
-                wallet: LightWallet::with_keystore(config.clone(), latest_block, ks),
+                wallet,
                 config: config.clone(),
                 mempool_monitor: std::sync::RwLock::new(None),
                 sync_lock: Mutex::new(()),

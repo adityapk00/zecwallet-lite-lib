@@ -18,7 +18,6 @@ use zcash_primitives::{
     note_encryption::try_sapling_compact_note_decryption,
     primitives::{Nullifier, SaplingIvk},
     transaction::{Transaction, TxId},
-    zip32::ExtendedFullViewingKey,
 };
 
 use super::syncdata::BlazeSyncData;
@@ -143,8 +142,6 @@ impl TrialDecryptions {
 
                             workers.push(tokio::spawn(async move {
                                 let keys = keys.read().await;
-                                let extfvk: ExtendedFullViewingKey =
-                                    todo!("retrieve extfvk for nullifier and to add to note");
                                 let have_spending_key = keys.have_spending_key(&ivk).await;
                                 let uri = bsync_data.read().await.uri().clone();
 
@@ -157,7 +154,7 @@ impl TrialDecryptions {
                                     .await?;
 
                                 let txid = WalletTx::new_txid(&ctx.hash);
-                                let nullifier = note.nf(&extfvk.fvk.vk, witness.position() as u64);
+                                let nullifier = keys.get_note_nullifier(&ivk, witness.position() as u64, &note).await?;
 
                                 wallet_txns.write().await.add_new_note(
                                     txid.clone(),
@@ -166,7 +163,8 @@ impl TrialDecryptions {
                                     timestamp,
                                     note,
                                     to,
-                                    &extfvk,
+                                    &ivk,
+                                    nullifier,
                                     have_spending_key,
                                     witness,
                                 );

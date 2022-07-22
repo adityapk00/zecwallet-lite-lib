@@ -304,7 +304,7 @@ impl FetchFullTxns {
                         block_time as u64,
                         note.clone(),
                         to,
-                        todo!("pending note without extfvk"),
+                        &ivk,
                     );
                 }
 
