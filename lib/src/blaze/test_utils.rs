@@ -1,7 +1,7 @@
 use std::{convert::TryInto, sync::Arc};
 
 use crate::{
-    compact_formats::{CompactBlock, CompactOutput, CompactSpend, CompactTx},
+    compact_formats::{CompactBlock, CompactSaplingOutput, CompactSaplingSpend, CompactTx},
     lightclient::{
         faketx::{clone_transactiondata, new_transactiondata},
         test_server::TestServerData,
@@ -138,12 +138,12 @@ impl FakeTransaction {
         let enc_ciphertext = encryptor.encrypt_note_plaintext();
 
         // Create a fake CompactBlock containing the note
-        let mut cout = CompactOutput::default();
+        let mut cout = CompactSaplingOutput::default();
         cout.cmu = cmu;
         cout.epk = epk;
         cout.ciphertext = enc_ciphertext[..52].to_vec();
 
-        let mut sapling_bundle = if self.td.sapling_bundle.is_some() {
+        let mut sapling_bundle = if self.td.sapling_bundle().is_some() {
             self.td.sapling_bundle().unwrap().clone()
         } else {
             sapling::Bundle {
@@ -156,7 +156,17 @@ impl FakeTransaction {
             }
         };
         sapling_bundle.shielded_outputs.push(od);
-        self.td.sapling_bundle = Some(sapling_bundle);
+
+        self.td = TransactionData::from_parts(
+            self.td.version(),
+            self.td.consensus_branch_id(),
+            self.td.lock_time(),
+            self.td.expiry_height(),
+            self.td.transparent_bundle().cloned(),
+            self.td.sprout_bundle().cloned(),
+            Some(sapling_bundle),
+            self.td.orchard_bundle().cloned(),
+        );
 
         self.ctx.outputs.push(cout);
 
@@ -166,7 +176,7 @@ impl FakeTransaction {
     pub fn add_tx_spending(&mut self, nf: &Nullifier, value: u64, ovk: &OutgoingViewingKey, to: &PaymentAddress) {
         let _ = self.add_sapling_output(value, Some(ovk.clone()), to);
 
-        let mut cs = CompactSpend::default();
+        let mut cs = CompactSaplingSpend::default();
         cs.nf = nf.to_vec();
         self.ctx.spends.push(cs);
 
@@ -206,7 +216,17 @@ impl FakeTransaction {
             value: Amount::from_u64(value).unwrap(),
             script_pubkey: TransparentAddress::PublicKey(taddr_bytes.try_into().unwrap()).script(),
         });
-        self.td.transparent_bundle = Some(t_bundle);
+
+        self.td = TransactionData::from_parts(
+            self.td.version(),
+            self.td.consensus_branch_id(),
+            self.td.lock_time(),
+            self.td.expiry_height(),
+            Some(t_bundle),
+            self.td.sprout_bundle().cloned(),
+            self.td.sapling_bundle().cloned(),
+            self.td.orchard_bundle().cloned(),
+        );
 
         self.taddrs_involved.push(taddr)
     }
@@ -228,7 +248,17 @@ impl FakeTransaction {
             script_sig: Script { 0: vec![] },
             sequence: 0,
         });
-        self.td.transparent_bundle = Some(t_bundle);
+
+        self.td = TransactionData::from_parts(
+            self.td.version(),
+            self.td.consensus_branch_id(),
+            self.td.lock_time(),
+            self.td.expiry_height(),
+            Some(t_bundle),
+            self.td.sprout_bundle().cloned(),
+            self.td.sapling_bundle().cloned(),
+            self.td.orchard_bundle().cloned(),
+        );
 
         self.taddrs_involved.push(taddr);
     }
@@ -289,7 +319,7 @@ impl FakeCompactBlock {
             };
 
             // Create a fake CompactBlock containing the note
-            let mut cout = CompactOutput::default();
+            let mut cout = CompactSaplingOutput::default();
             cout.cmu = note.cmu().to_bytes().to_vec();
             cout.epk = [0u8; 32].to_vec();
             cout.ciphertext = [0u8; 52].to_vec();
@@ -349,7 +379,7 @@ impl FakeCompactBlockList {
 
             if let Some(s_bundle) = tx.sapling_bundle() {
                 for out in &s_bundle.shielded_outputs {
-                    let mut cout = CompactOutput::default();
+                    let mut cout = CompactSaplingOutput::default();
                     cout.cmu = out.cmu.to_repr().to_vec();
                     cout.epk = out.ephemeral_key.0.to_vec();
                     cout.ciphertext = out.enc_ciphertext[..52].to_vec();
@@ -358,7 +388,7 @@ impl FakeCompactBlockList {
                 }
 
                 for spend in &s_bundle.shielded_spends {
-                    let mut cs = CompactSpend::default();
+                    let mut cs = CompactSaplingSpend::default();
                     cs.nf = spend.nullifier.to_vec();
 
                     ctx.spends.push(cs);

@@ -6,10 +6,12 @@ use std::{
 use base58::{FromBase58, ToBase58};
 use bip39::{Language, Mnemonic, Seed};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use orchard::keys::{FullViewingKey, IncomingViewingKey, Scope};
 use rand::{rngs::OsRng, Rng};
 use ripemd160::Digest;
 use sha2::Sha256;
 use sodiumoxide::crypto::secretbox;
+use zcash_address::unified::Encoding;
 use zcash_client_backend::{
     address,
     encoding::{encode_extended_full_viewing_key, encode_extended_spending_key, encode_payment_address},
@@ -28,6 +30,7 @@ use crate::{
 };
 
 use super::{
+    walletokey::WalletOKey,
     wallettkey::{WalletTKey, WalletTKeyType},
     walletzkey::{WalletZKey, WalletZKeyType},
 };
@@ -116,11 +119,15 @@ pub struct Keys<P> {
     // Transparent keys. If the wallet is locked, then the secret keys will be encrypted,
     // but the addresses will be present. This Vec contains both wallet and imported tkeys
     pub(crate) tkeys: Vec<WalletTKey>,
+
+    // Unified address (Orchard) keys actually in this wallet.
+    // If wallet is locked, only viewing keys are present.
+    pub(crate) okeys: Vec<WalletOKey>,
 }
 
 impl<P: consensus::Parameters> Keys<P> {
     pub fn serialized_version() -> u64 {
-        return 21;
+        return 22;
     }
 
     #[cfg(test)]
@@ -135,10 +142,16 @@ impl<P: consensus::Parameters> Keys<P> {
             seed: [0u8; 32],
             zkeys: vec![],
             tkeys: vec![],
+            okeys: vec![],
         }
     }
 
-    pub fn new(config: &LightClientConfig<P>, seed_phrase: Option<String>, num_zaddrs: u32) -> Result<Self, String> {
+    pub fn new(
+        config: &LightClientConfig<P>,
+        seed_phrase: Option<String>,
+        num_zaddrs: u32,
+        num_oaddrs: u32,
+    ) -> Result<Self, String> {
         let mut seed_bytes = [0u8; 32];
 
         if seed_phrase.is_none() {
@@ -165,10 +178,21 @@ impl<P: consensus::Parameters> Keys<P> {
         // Derive only the first sk and address
         let tpk = WalletTKey::new_hdkey(config, 0, &bip39_seed.as_bytes());
 
+        // Sapling keys
         let mut zkeys = vec![];
         for hdkey_num in 0..num_zaddrs {
             let (extsk, _, _) = Self::get_zaddr_from_bip39seed(&config, &bip39_seed.as_bytes(), hdkey_num);
             zkeys.push(WalletZKey::new_hdkey(hdkey_num, extsk));
+        }
+
+        // Orchard keys
+        let mut okeys = vec![];
+        for hdkey_num in 0..num_oaddrs {
+            let spending_key =
+                orchard::keys::SpendingKey::from_zip32_seed(&bip39_seed.as_bytes(), config.get_coin_type(), hdkey_num)
+                    .unwrap();
+
+            okeys.push(WalletOKey::new_hdkey(hdkey_num, spending_key));
         }
 
         Ok(Self {
@@ -180,6 +204,7 @@ impl<P: consensus::Parameters> Keys<P> {
             seed: seed_bytes,
             zkeys,
             tkeys: vec![tpk],
+            okeys,
         })
     }
 
@@ -305,6 +330,7 @@ impl<P: consensus::Parameters> Keys<P> {
             seed: seed_bytes,
             zkeys,
             tkeys,
+            okeys: vec![],
         })
     }
 
@@ -329,6 +355,12 @@ impl<P: consensus::Parameters> Keys<P> {
         let mut seed_bytes = [0u8; 32];
         reader.read_exact(&mut seed_bytes)?;
 
+        let okeys = if version <= 21 {
+            vec![]
+        } else {
+            Vector::read(&mut reader, |r| WalletOKey::read(r))?
+        };
+
         let zkeys = Vector::read(&mut reader, |r| WalletZKey::read(r))?;
 
         let tkeys = if version <= 20 {
@@ -351,7 +383,7 @@ impl<P: consensus::Parameters> Keys<P> {
             Vector::read(&mut reader, |r| WalletTKey::read(r))?
         };
 
-        Ok(Self {
+        let keys = Self {
             config: config.clone(),
             encrypted,
             unlocked: !encrypted,
@@ -360,7 +392,12 @@ impl<P: consensus::Parameters> Keys<P> {
             seed: seed_bytes,
             zkeys,
             tkeys,
-        })
+            okeys,
+        };
+
+        // If there are no okeys, derive the first one.
+
+        Ok(keys)
     }
 
     pub fn write<W: Write>(&self, mut writer: W) -> io::Result<()> {
@@ -382,7 +419,10 @@ impl<P: consensus::Parameters> Keys<P> {
         // Flush after writing the seed, so in case of a disaster, we can still recover the seed.
         writer.flush()?;
 
-        // Write all the wallet's keys
+        // Write all orchard keys
+        Vector::write(&mut writer, &self.okeys, |w, ok| ok.write(w))?;
+
+        // Write all the wallet's zkeys
         Vector::write(&mut writer, &self.zkeys, |w, zk| zk.write(w))?;
 
         // Write the transparent private keys
@@ -406,8 +446,25 @@ impl<P: consensus::Parameters> Keys<P> {
             .to_string()
     }
 
+    pub fn get_all_orchard_fvks(&self) -> Vec<FullViewingKey> {
+        self.okeys.iter().map(|ok| ok.fvk().clone()).collect::<Vec<_>>()
+    }
+
+    pub fn get_all_orchard_ivks(&self) -> Vec<IncomingViewingKey> {
+        self.okeys
+            .iter()
+            .map(|ok| ok.fvk().to_ivk(Scope::External))
+            .collect::<Vec<_>>()
+    }
     pub fn get_all_extfvks(&self) -> Vec<ExtendedFullViewingKey> {
         self.zkeys.iter().map(|zk| zk.extfvk.clone()).collect()
+    }
+
+    pub fn get_all_uaddresses(&self) -> Vec<String> {
+        self.okeys
+            .iter()
+            .map(|ok| ok.unified_address.encode(self.config.get_network()))
+            .collect()
     }
 
     pub fn get_all_zaddresses(&self) -> Vec<String> {
@@ -429,11 +486,19 @@ impl<P: consensus::Parameters> Keys<P> {
         self.tkeys.iter().map(|tk| tk.address.clone()).collect::<Vec<_>>()
     }
 
-    pub fn have_spending_key(&self, extfvk: &ExtendedFullViewingKey) -> bool {
+    pub fn have_sapling_spending_key(&self, extfvk: &ExtendedFullViewingKey) -> bool {
         self.zkeys
             .iter()
             .find(|zk| zk.extfvk == *extfvk)
             .map(|zk| zk.have_spending_key())
+            .unwrap_or(false)
+    }
+
+    pub fn have_orchard_spending_key(&self, fvk: &FullViewingKey) -> bool {
+        self.okeys
+            .iter()
+            .find(|ok| ok.fvk == *fvk)
+            .map(|ok| ok.have_spending_key())
             .unwrap_or(false)
     }
 
@@ -516,6 +581,35 @@ impl<P: consensus::Parameters> Keys<P> {
                 }
             }
         }
+    }
+
+    /// Adds a new unified address to the wallet. This will derive a new address from the seed
+    /// at the next position and add it to the wallet.
+    /// NOTE: This does NOT rescan
+    pub fn add_oaddr(&mut self) -> String {
+        if !self.unlocked {
+            return "Error: Can't add key while wallet is locked".to_string();
+        }
+
+        // Find the highest pos we have
+        let pos = self
+            .zkeys
+            .iter()
+            .filter(|zk| zk.hdkey_num.is_some())
+            .max_by(|zk1, zk2| zk1.hdkey_num.unwrap().cmp(&zk2.hdkey_num.unwrap()))
+            .map_or(0, |zk| zk.hdkey_num.unwrap() + 1);
+
+        let bip39_seed = bip39::Seed::new(&Mnemonic::from_entropy(&self.seed, Language::English).unwrap(), "");
+
+        let spending_key =
+            orchard::keys::SpendingKey::from_zip32_seed(&bip39_seed.as_bytes(), self.config.get_coin_type(), pos)
+                .unwrap();
+        let newkey = WalletOKey::new_hdkey(pos, spending_key);
+        let ua = newkey.unified_address.encode(&self.config.get_network());
+
+        self.okeys.push(newkey);
+
+        return ua;
     }
 
     /// Adds a new z address to the wallet. This will derive a new address from the seed

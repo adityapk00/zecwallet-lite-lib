@@ -81,7 +81,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
         }
 
         let l = LightClient {
-            wallet: LightWallet::new(config.clone(), seed_phrase, height, 1)?,
+            wallet: LightWallet::new(config.clone(), seed_phrase, height, 1, 1)?,
             config: config.clone(),
             mempool_monitor: std::sync::RwLock::new(None),
             bsync_data: Arc::new(RwLock::new(BlazeSyncData::new(&config))),
@@ -209,10 +209,15 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
         };
     }
 
-    fn new_wallet(config: &LightClientConfig<P>, latest_block: u64, num_zaddrs: u32) -> io::Result<Self> {
+    fn new_wallet(
+        config: &LightClientConfig<P>,
+        latest_block: u64,
+        num_zaddrs: u32,
+        num_oaddrs: u32,
+    ) -> io::Result<Self> {
         Runtime::new().unwrap().block_on(async move {
             let l = LightClient {
-                wallet: LightWallet::new(config.clone(), None, latest_block, num_zaddrs)?,
+                wallet: LightWallet::new(config.clone(), None, latest_block, num_zaddrs, num_oaddrs)?,
                 config: config.clone(),
                 mempool_monitor: std::sync::RwLock::new(None),
                 sync_lock: Mutex::new(()),
@@ -246,7 +251,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
             }
         }
 
-        Self::new_wallet(config, latest_block, 1)
+        Self::new_wallet(config, latest_block, 1, 1)
     }
 
     pub fn new_from_phrase(
@@ -268,7 +273,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
         let lr = if seed_phrase.starts_with(config.hrp_sapling_private_key())
             || seed_phrase.starts_with(config.hrp_sapling_viewing_key())
         {
-            let lc = Self::new_wallet(config, birthday, 0)?;
+            let lc = Self::new_wallet(config, birthday, 0, 0)?;
             Runtime::new().unwrap().block_on(async move {
                 lc.do_import_key(seed_phrase, birthday)
                     .await
@@ -281,7 +286,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
         } else {
             Runtime::new().unwrap().block_on(async move {
                 let l = LightClient {
-                    wallet: LightWallet::new(config.clone(), Some(seed_phrase), birthday, 1)?,
+                    wallet: LightWallet::new(config.clone(), Some(seed_phrase), birthday, 1, 1)?,
                     config: config.clone(),
                     mempool_monitor: std::sync::RwLock::new(None),
                     sync_lock: Mutex::new(()),
@@ -420,6 +425,9 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
     }
 
     pub async fn do_address(&self) -> JsonValue {
+        // Collect UAs
+        let uas = self.wallet.keys().read().await.get_all_uaddresses();
+
         // Collect z addresses
         let z_addresses = self.wallet.keys().read().await.get_all_zaddresses();
 
@@ -427,6 +435,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
         let t_addresses = self.wallet.keys().read().await.get_all_taddrs();
 
         object! {
+            "ua_addresses" => uas,
             "z_addresses" => z_addresses,
             "t_addresses" => t_addresses,
         }
@@ -648,15 +657,54 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
                 .into_iter()
                 .collect();
 
+            // Collect orchard notes
+            self.wallet.txns.read().await.current.iter()
+            .flat_map( |(txid, wtx)| {
+                let spendable_address = spendable_address.clone();
+                wtx.o_notes.iter().filter_map(move |nd|
+                    if !all_notes && nd.spent.is_some() {
+                        None
+                    } else {
+                        let address = LightWallet::<P>::orchard_ua_address (&self.config, &nd.note_address);
+                        let spendable = spendable_address.contains(&address) &&
+                                                wtx.block <= anchor_height && nd.spent.is_none() && nd.unconfirmed_spent.is_none();
+
+                        let created_block:u32 = wtx.block.into();
+                        Some(object!{
+                            "created_in_block"   => created_block,
+                            "datetime"           => wtx.datetime,
+                            "created_in_txid"    => format!("{}", txid),
+                            "value"              => nd.note_value,
+                            "unconfirmed"        => wtx.unconfirmed,
+                            "is_change"          => nd.is_change,
+                            "address"            => address,
+                            "spendable"          => spendable,
+                            "spent"              => nd.spent.map(|(spent_txid, _)| format!("{}", spent_txid)),
+                            "spent_at_height"    => nd.spent.map(|(_, h)| h),
+                            "unconfirmed_spent"  => nd.unconfirmed_spent.map(|(spent_txid, _)| format!("{}", spent_txid)),
+                        })
+                    }
+                )
+            })
+            .for_each( |note| {
+                if note["spent"].is_null() && note["unconfirmed_spent"].is_null() {
+                    unspent_notes.push(note);
+                } else if !note["spent"].is_null() {
+                    spent_notes.push(note);
+                } else {
+                    pending_notes.push(note);
+                }
+            });
+
             // Collect Sapling notes
             self.wallet.txns.read().await.current.iter()
                 .flat_map( |(txid, wtx)| {
                     let spendable_address = spendable_address.clone();
-                    wtx.notes.iter().filter_map(move |nd|
+                    wtx.s_notes.iter().filter_map(move |nd|
                         if !all_notes && nd.spent.is_some() {
                             None
                         } else {
-                            let address = LightWallet::<P>::note_address(self.config.hrp_sapling_address(), nd);
+                            let address = LightWallet::<P>::sapling_note_address(self.config.hrp_sapling_address(), nd);
                             let spendable = address.is_some() &&
                                                     spendable_address.contains(&address.clone().unwrap()) &&
                                                     wtx.block <= anchor_height && nd.spent.is_none() && nd.unconfirmed_spent.is_none();
@@ -803,7 +851,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
                     // If money was spent, create a transaction. For this, we'll subtract
                     // all the change notes + Utxos
                     let total_change = v
-                        .notes
+                        .s_notes
                         .iter()
                         .filter(|nd| nd.is_change)
                         .map(|nd| nd.note.value)
@@ -845,7 +893,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
                 }
 
                 // For each sapling note that is not a change, add a Tx.
-                txns.extend(v.notes.iter().filter(|nd| !nd.is_change).enumerate().map(|(i, nd)| {
+                txns.extend(v.s_notes.iter().filter(|nd| !nd.is_change).enumerate().map(|(i, nd)| {
                     let block_height: u32 = v.block.into();
                     let mut o = object! {
                         "block_height" => block_height,
@@ -855,7 +903,39 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
                         "txid"         => format!("{}", v.txid),
                         "amount"       => nd.note.value as i64,
                         "zec_price"    => v.zec_price.map(|p| (p * 100.0).round() / 100.0),
-                        "address"      => LightWallet::<P>::note_address(self.config.hrp_sapling_address(), nd),
+                        "address"      => LightWallet::<P>::sapling_note_address(self.config.hrp_sapling_address(), nd),
+                        "memo"         => LightWallet::<P>::memo_str(nd.memo.clone())
+                    };
+
+                    if include_memo_hex {
+                        o.insert(
+                            "memohex",
+                            match &nd.memo {
+                                Some(m) => {
+                                    let memo_bytes: MemoBytes = m.into();
+                                    hex::encode(memo_bytes.as_slice())
+                                }
+                                _ => "".to_string(),
+                            },
+                        )
+                        .unwrap();
+                    }
+
+                    return o;
+                }));
+
+                // For each orchard note that is not a change, add a Tx
+                txns.extend(v.o_notes.iter().filter(|nd| !nd.is_change).enumerate().map(|(i, nd)| {
+                    let block_height: u32 = v.block.into();
+                    let mut o = object! {
+                        "block_height" => block_height,
+                        "unconfirmed" => v.unconfirmed,
+                        "datetime"     => v.datetime,
+                        "position"     => i,
+                        "txid"         => format!("{}", v.txid),
+                        "amount"       => nd.note_value,
+                        "zec_price"    => v.zec_price.map(|p| (p * 100.0).round() / 100.0),
+                        "address"      => LightWallet::<P>::orchard_ua_address(&self.config, &nd.note_address),
                         "memo"         => LightWallet::<P>::memo_str(nd.memo.clone())
                     };
 
@@ -917,6 +997,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
 
         let new_address = {
             let addr = match addr_type {
+                "u" => self.wallet.keys().write().await.add_oaddr(),
                 "z" => self.wallet.keys().write().await.add_zaddr(),
                 "t" => self.wallet.keys().write().await.add_taddr(),
                 _ => {
@@ -1389,15 +1470,14 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
 
         // The processor to fetch the full transactions, and decode the memos and the outgoing metadata
         let fetch_full_tx_processor = FetchFullTxns::new(&self.config, self.wallet.keys(), self.wallet.txns());
-        let (fetch_full_txns_handle, fetch_full_txn_tx, fetch_taddr_txns_tx) = fetch_full_tx_processor
+        let (fetch_full_txns_handle, scan_full_txn_tx, fetch_taddr_txns_tx) = fetch_full_tx_processor
             .start(fulltx_fetcher_tx.clone(), bsync_data.clone())
             .await;
 
         // The processor to process Transactions detected by the trial decryptions processor
         let update_notes_processor = UpdateNotes::new(self.wallet.txns());
-        let (update_notes_handle, blocks_done_tx, detected_txns_tx) = update_notes_processor
-            .start(bsync_data.clone(), fetch_full_txn_tx)
-            .await;
+        let (update_notes_handle, blocks_done_tx, detected_txns_tx) =
+            update_notes_processor.start(bsync_data.clone(), scan_full_txn_tx).await;
 
         // Do Trial decryptions of all the sapling outputs, and pass on the successful ones to the update_notes processor
         let trial_decryptions_processor = TrialDecryptions::new(self.wallet.keys(), self.wallet.txns());

@@ -1191,7 +1191,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> Command<P> for NewAddress
         let mut h = vec![];
         h.push("Create a new address in this wallet");
         h.push("Usage:");
-        h.push("new [z | t]");
+        h.push("new [u | z | t]");
         h.push("");
         h.push("Example:");
         h.push("To create a new z address:");

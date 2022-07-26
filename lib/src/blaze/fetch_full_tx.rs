@@ -9,6 +9,9 @@ use crate::{
 
 use futures::{stream::FuturesUnordered, StreamExt};
 use log::info;
+use orchard::note_encryption::OrchardDomain;
+use zcash_note_encryption::try_note_decryption;
+
 use std::{
     collections::HashSet,
     convert::{TryFrom, TryInto},
@@ -291,9 +294,9 @@ impl<P: consensus::Parameters + Send + Sync + 'static> FetchFullTxns<P> {
             .collect();
 
         let extfvks = Arc::new(keys.read().await.get_all_extfvks());
-        let ivks: Vec<_> = extfvks.iter().map(|k| k.fvk.vk.ivk()).collect();
+        let s_ivks: Vec<_> = extfvks.iter().map(|k| k.fvk.vk.ivk()).collect();
 
-        // Step 4: Scan shielded sapling outputs to see if anyone of them is us, and if it is, extract the memo. Note that if this
+        // Step 4a: Scan shielded sapling outputs to see if anyone of them is us, and if it is, extract the memo. Note that if this
         // is invoked by a transparent transaction, and we have not seen this Tx from the trial_decryptions processor, the Note
         // might not exist, and the memo updating might be a No-Op. That's Ok, the memo will get updated when this Tx is scanned
         // a second time by the Full Tx Fetcher
@@ -302,7 +305,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> FetchFullTxns<P> {
         if let Some(s_bundle) = tx.sapling_bundle() {
             for output in s_bundle.shielded_outputs.iter() {
                 // Search all of our keys
-                for (i, ivk) in ivks.iter().enumerate() {
+                for (i, ivk) in s_ivks.iter().enumerate() {
                     let (note, to, memo_bytes) =
                         match try_sapling_note_decryption(&config.get_params(), height, &ivk, output) {
                             Some(ret) => ret,
@@ -322,7 +325,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> FetchFullTxns<P> {
                     }
 
                     let memo = memo_bytes.clone().try_into().unwrap_or(Memo::Future(memo_bytes));
-                    wallet_txns.write().await.add_memo_to_note(&tx.txid(), note, memo);
+                    wallet_txns.write().await.add_memo_to_s_note(&tx.txid(), note, memo);
                 }
 
                 // Also scan the output to see if it can be decoded with our OutgoingViewKey
@@ -368,6 +371,34 @@ impl<P: consensus::Parameters + Send + Sync + 'static> FetchFullTxns<P> {
 
                 // Add it to the overall outgoing metadatas
                 outgoing_metadatas.extend(omds);
+            }
+        }
+
+        // Step 4b: Scan the orchard part of the bundle to see if there are any memos
+        let o_ivks = keys.read().await.get_all_orchard_ivks();
+        if let Some(o_bundle) = tx.orchard_bundle() {
+            // let orchard_actions = o_bundle
+            //     .actions()
+            //     .into_iter()
+            //     .map(|oa| (OrchardDomain::for_action(oa), oa))
+            //     .collect::<Vec<_>>();
+
+            // let decrypts = try_note_decryption(o_ivks.as_ref(), orchard_actions.as_ref());
+            for oa in o_bundle.actions() {
+                for (ivk_num, ivk) in o_ivks.iter().enumerate() {
+                    if let Some((note, _address, memo_bytes)) =
+                        try_note_decryption(&OrchardDomain::for_action(oa), ivk, oa)
+                    {
+                        if let Ok(memo) = Memo::from_bytes(&memo_bytes) {
+                            wallet_txns.write().await.add_memo_to_o_note(
+                                &tx.txid(),
+                                &keys.read().await.okeys[ivk_num].fvk(),
+                                note,
+                                memo,
+                            );
+                        }
+                    }
+                }
             }
         }
 

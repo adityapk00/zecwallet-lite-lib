@@ -27,14 +27,14 @@ use zcash_primitives::sapling::Node;
 use zcash_primitives::sapling::{Note, Rseed, ValueCommitment};
 use zcash_primitives::transaction::components::amount::DEFAULT_FEE;
 use zcash_primitives::transaction::components::{OutputDescription, GROTH_PROOF_SIZE};
-use zcash_primitives::transaction::Transaction;
+use zcash_primitives::transaction::{Transaction, TransactionData};
 use zcash_primitives::zip32::{ExtendedFullViewingKey, ExtendedSpendingKey};
 
 use crate::blaze::fetch_full_tx::FetchFullTxns;
 use crate::blaze::test_utils::{FakeCompactBlockList, FakeTransaction};
 use crate::compact_formats::compact_tx_streamer_client::CompactTxStreamerClient;
 
-use crate::compact_formats::{CompactOutput, CompactTx, Empty};
+use crate::compact_formats::{CompactSaplingOutput, CompactTx, Empty};
 use crate::lightclient::faketx::new_transactiondata;
 use crate::lightclient::test_server::{create_test_server, mine_pending_blocks, mine_random_blocks};
 use crate::lightclient::LightClient;
@@ -378,13 +378,13 @@ async fn multiple_incoming_same_tx() {
         let enc_ciphertext = encryptor.encrypt_note_plaintext();
 
         // Create a fake CompactBlock containing the note
-        let mut cout = CompactOutput::default();
+        let mut cout = CompactSaplingOutput::default();
         cout.cmu = cmu;
         cout.epk = epk;
         cout.ciphertext = enc_ciphertext[..52].to_vec();
         ctx.outputs.push(cout);
 
-        let mut sapling_bundle = if td.sapling_bundle.is_some() {
+        let mut sapling_bundle = if td.sapling_bundle().is_some() {
             td.sapling_bundle().unwrap().clone()
         } else {
             sapling::Bundle {
@@ -398,7 +398,17 @@ async fn multiple_incoming_same_tx() {
         };
 
         sapling_bundle.shielded_outputs.push(od);
-        td.sapling_bundle = Some(sapling_bundle);
+
+        td = TransactionData::from_parts(
+            td.version(),
+            td.consensus_branch_id(),
+            td.lock_time(),
+            td.expiry_height(),
+            td.transparent_bundle().cloned(),
+            td.sprout_bundle().cloned(),
+            Some(sapling_bundle),
+            td.orchard_bundle().cloned(),
+        );
     }
 
     // td.binding_sig = Signature::read(&vec![0u8; 64][..]).ok();
@@ -951,7 +961,7 @@ async fn aborted_resync() {
             &hex::decode(sent_txid.clone()).unwrap().into_iter().rev().collect(),
         ))
         .unwrap()
-        .notes
+        .s_notes
         .get(0)
         .unwrap()
         .witnesses
@@ -979,7 +989,7 @@ async fn aborted_resync() {
             &hex::decode(sent_txid).unwrap().into_iter().rev().collect(),
         ))
         .unwrap()
-        .notes
+        .s_notes
         .get(0)
         .unwrap()
         .witnesses
@@ -1191,7 +1201,7 @@ async fn witness_clearing() {
         .current
         .get(&tx.txid())
         .unwrap()
-        .notes
+        .s_notes
         .get(0)
         .unwrap()
         .witnesses
@@ -1211,7 +1221,7 @@ async fn witness_clearing() {
         .current
         .get(&tx.txid())
         .unwrap()
-        .notes
+        .s_notes
         .get(0)
         .unwrap()
         .witnesses
@@ -1228,7 +1238,7 @@ async fn witness_clearing() {
         .current
         .get(&tx.txid())
         .unwrap()
-        .notes
+        .s_notes
         .get(0)
         .unwrap()
         .witnesses
@@ -1245,7 +1255,7 @@ async fn witness_clearing() {
         .current
         .get(&tx.txid())
         .unwrap()
-        .notes
+        .s_notes
         .get(0)
         .unwrap()
         .witnesses

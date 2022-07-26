@@ -32,7 +32,8 @@ message TxFilter {
 }
 
 // RawTransaction contains the complete transaction data. It also optionally includes 
-// the block height in which the transaction was included.
+// the block height in which the transaction was included, or, when returned
+// by GetMempoolStream(), the latest block height.
 message RawTransaction {
     bytes data = 1;     // exact data returned by Zcash 'getrawtransaction'
     uint64 height = 2;  // height that the transaction was mined (or -1)
@@ -109,11 +110,12 @@ message Exclude {
 
 // The TreeState is derived from the Zcash z_gettreestate rpc.
 message TreeState {
-    string network = 1; // "main" or "test"
-    uint64 height = 2;
-    string hash = 3;    // block id
-    uint32 time = 4;    // Unix epoch time when the block was mined
-    string tree = 5;    // sapling commitment tree state
+    string network = 1;     // "main" or "test"
+    uint64 height = 2;      // block height
+    string hash = 3;        // block id
+    uint32 time = 4;        // Unix epoch time when the block was mined
+    string tree = 5; // sapling commitment tree state
+    string orchardTree = 6; // orchard commitment tree state
 }
 
 // Results are sorted by height, which makes it easy to issue another
@@ -163,7 +165,7 @@ service CompactTxStreamer {
     rpc GetBlock(BlockID) returns (CompactBlock) {}
     // Return a list of consecutive compact blocks
     rpc GetBlockRange(BlockRange) returns (stream CompactBlock) {}
-    
+
     // Get the historical and current prices 
     rpc GetZECPrice(PriceRequest) returns (PriceResponse) {}
     rpc GetCurrentZECPrice(Empty) returns (PriceResponse) {}
@@ -178,7 +180,7 @@ service CompactTxStreamer {
 
     // Legacy API that is used as a fallback for t-Address support, if the server is running the old version (lwdv2)
     rpc GetAddressTxids(TransparentAddressBlockFilter) returns (stream RawTransaction) {}
-
+    
     rpc GetTaddressBalance(AddressList) returns (Balance) {}
     rpc GetTaddressBalanceStream(stream Address) returns (Balance) {}
 
@@ -193,6 +195,8 @@ service CompactTxStreamer {
     // in the exclude list that don't exist in the mempool are ignored.
     rpc GetMempoolTx(Exclude) returns (stream CompactTx) {}
 
+    // Return a stream of current Mempool transactions. This will keep the output stream open while
+    // there are mempool transactions. It will close the returned stream when a new block is mined.
     rpc GetMempoolStream(Empty) returns (stream RawTransaction) {}
 
     // GetTreeState returns the note commitment tree state corresponding to the given block.

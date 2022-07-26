@@ -15,6 +15,7 @@ use log4rs::{
     Config,
 };
 use tokio::runtime::Runtime;
+use zcash_address::Network;
 use zcash_primitives::{
     consensus::{self, BlockHeight, NetworkUpgrade, Parameters},
     constants::{self},
@@ -148,6 +149,11 @@ impl<P: consensus::Parameters> LightClientConfig<P> {
 
     pub fn get_params(&self) -> P {
         self.params.clone()
+    }
+
+    pub fn get_network(&self) -> &Network {
+        // TODO
+        return &Network::Main;
     }
 
     /// Build the Logging config

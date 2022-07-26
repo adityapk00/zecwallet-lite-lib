@@ -12,6 +12,7 @@ use crate::{
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use futures::Future;
 use log::{error, info, warn};
+use orchard::Address;
 use std::sync::mpsc;
 use std::{
     cmp,
@@ -21,14 +22,16 @@ use std::{
     time::SystemTime,
 };
 use tokio::sync::RwLock;
+use zcash_address::unified::Receiver;
+use zcash_address::unified::{Address as UnifiedAddress, Encoding};
 use zcash_client_backend::{
     address,
     encoding::{decode_extended_full_viewing_key, decode_extended_spending_key, encode_payment_address},
 };
 use zcash_encoding::{Optional, Vector};
-use zcash_primitives::consensus;
 use zcash_primitives::memo::MemoBytes;
 use zcash_primitives::sapling::prover::TxProver;
+use zcash_primitives::{consensus, transaction};
 use zcash_primitives::{
     consensus::BlockHeight,
     legacy::Script,
@@ -53,6 +56,7 @@ pub(crate) mod keys;
 pub(crate) mod message;
 pub(crate) mod utils;
 pub(crate) mod wallet_txns;
+mod walletokey;
 pub(crate) mod wallettkey;
 mod walletzkey;
 
@@ -183,8 +187,10 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightWallet<P> {
         seed_phrase: Option<String>,
         height: u64,
         num_zaddrs: u32,
+        num_oaddrs: u32,
     ) -> io::Result<Self> {
-        let keys = Keys::new(&config, seed_phrase, num_zaddrs).map_err(|e| Error::new(ErrorKind::InvalidData, e))?;
+        let keys = Keys::new(&config, seed_phrase, num_zaddrs, num_oaddrs)
+            .map_err(|e| Error::new(ErrorKind::InvalidData, e))?;
 
         Ok(Self {
             keys: Arc::new(RwLock::new(keys)),
@@ -272,7 +278,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightWallet<P> {
             let spendable_keys: Vec<_> = keys
                 .get_all_extfvks()
                 .into_iter()
-                .filter(|extfvk| keys.have_spending_key(extfvk))
+                .filter(|extfvk| keys.have_sapling_spending_key(extfvk))
                 .collect();
 
             txns.adjust_spendable_status(spendable_keys);
@@ -353,7 +359,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightWallet<P> {
     pub async fn set_witness_block_heights(&mut self) {
         let top_height = self.last_scanned_height().await;
         self.txns.write().await.current.iter_mut().for_each(|(_, wtx)| {
-            wtx.notes.iter_mut().for_each(|nd| {
+            wtx.s_notes.iter_mut().for_each(|nd| {
                 nd.witnesses.top_height = top_height;
             });
         });
@@ -378,11 +384,17 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightWallet<P> {
         self.blocks.read().await.iter().map(|b| b.clone()).collect()
     }
 
-    pub fn note_address(hrp: &str, note: &SaplingNoteData) -> Option<String> {
+    pub fn sapling_note_address(hrp: &str, note: &SaplingNoteData) -> Option<String> {
         match note.extfvk.fvk.vk.to_payment_address(note.diversifier) {
             Some(pa) => Some(encode_payment_address(hrp, &pa)),
             None => None,
         }
+    }
+
+    pub fn orchard_ua_address(config: &LightClientConfig<P>, address: &Address) -> String {
+        let orchard_container = Receiver::Orchard(address.to_raw_address_bytes());
+        let unified_address = UnifiedAddress::try_from_items(vec![orchard_container]).unwrap();
+        unified_address.encode(config.get_network())
     }
 
     pub async fn set_download_memo(&self, value: MemoDownloadOption) {
@@ -678,7 +690,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightWallet<P> {
             .current
             .values()
             .map(|tx| {
-                tx.notes
+                tx.s_notes
                     .iter()
                     .filter(|nd| match addr.as_ref() {
                         Some(a) => {
@@ -736,12 +748,12 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightWallet<P> {
             .current
             .values()
             .map(|tx| {
-                tx.notes
+                tx.s_notes
                     .iter()
                     .filter(|nd| nd.spent.is_none() && nd.unconfirmed_spent.is_none())
                     .filter(|nd| {
                         // Check to see if we have this note's spending key.
-                        keys.have_spending_key(&nd.extfvk)
+                        keys.have_sapling_spending_key(&nd.extfvk)
                     })
                     .filter(|nd| match addr.clone() {
                         Some(a) => {
@@ -776,7 +788,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightWallet<P> {
             .values()
             .map(|tx| {
                 if tx.block <= BlockHeight::from_u32(anchor_height) {
-                    tx.notes
+                    tx.s_notes
                         .iter()
                         .filter(|nd| nd.spent.is_none() && nd.unconfirmed_spent.is_none())
                         .filter(|nd| match addr.as_ref() {
@@ -809,12 +821,12 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightWallet<P> {
             .values()
             .map(|tx| {
                 if tx.block <= BlockHeight::from_u32(anchor_height) {
-                    tx.notes
+                    tx.s_notes
                         .iter()
                         .filter(|nd| nd.spent.is_none() && nd.unconfirmed_spent.is_none())
                         .filter(|nd| {
                             // Check to see if we have this note's spending key and witnesses
-                            keys.have_spending_key(&nd.extfvk) && nd.witnesses.len() > 0
+                            keys.have_sapling_spending_key(&nd.extfvk) && nd.witnesses.len() > 0
                         })
                         .filter(|nd| match addr.as_ref() {
                             Some(a) => {
@@ -879,7 +891,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightWallet<P> {
             .current
             .values()
             .flat_map(|wtx| {
-                wtx.notes.iter().map(|n| {
+                wtx.s_notes.iter().map(|n| {
                     let (_, pa) = n.extfvk.default_address();
                     let zaddr = encode_payment_address(self.config.hrp_sapling_address(), &pa);
                     zaddrs.iter().position(|za| *za == zaddr).unwrap_or(zaddrs.len())
@@ -935,7 +947,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightWallet<P> {
 
         // Go over all the sapling notes that might need updating
         self.txns.write().await.current.values_mut().for_each(|wtx| {
-            wtx.notes
+            wtx.s_notes
                 .iter_mut()
                 .filter(|nd| nd.spent.is_some() && nd.spent.unwrap().1 == 0)
                 .for_each(|nd| {
@@ -994,7 +1006,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightWallet<P> {
                 .await
                 .current
                 .iter()
-                .flat_map(|(txid, tx)| tx.notes.iter().map(move |note| (*txid, note)))
+                .flat_map(|(txid, tx)| tx.s_notes.iter().map(move |note| (*txid, note)))
                 .filter(|(_, note)| note.note.value > 0)
                 .filter_map(|(txid, note)| {
                     // Filter out notes that are already spent
@@ -1227,6 +1239,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightWallet<P> {
                     builder.add_sapling_output(Some(ovk), to.clone(), value, encoded_memo)
                 }
                 address::RecipientAddress::Transparent(to) => builder.add_transparent_output(&to, value),
+                address::RecipientAddress::Unified(_) => Err(transaction::builder::Error::NoChangeAddress),
             } {
                 let e = format!("Error adding output: {:?}", e);
                 error!("{}", e);
@@ -1297,7 +1310,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightWallet<P> {
                     .current
                     .get_mut(&selected.txid)
                     .unwrap()
-                    .notes
+                    .s_notes
                     .iter_mut()
                     .find(|nd| nd.nullifier == selected.nullifier)
                     .unwrap();
@@ -1401,7 +1414,7 @@ mod test {
         assert_eq!(
             incw_to_string(&notes[0].witness),
             incw_to_string(
-                lc.wallet.txns.read().await.current.get(&tx.txid()).unwrap().notes[0]
+                lc.wallet.txns.read().await.current.get(&tx.txid()).unwrap().s_notes[0]
                     .witnesses
                     .last()
                     .unwrap()
@@ -1425,7 +1438,7 @@ mod test {
         assert_eq!(
             incw_to_string(&notes[0].witness),
             incw_to_string(
-                lc.wallet.txns.read().await.current.get(&tx.txid()).unwrap().notes[0]
+                lc.wallet.txns.read().await.current.get(&tx.txid()).unwrap().s_notes[0]
                     .witnesses
                     .get_from_last(1)
                     .unwrap()
@@ -1443,7 +1456,7 @@ mod test {
         assert_eq!(
             incw_to_string(&notes[0].witness),
             incw_to_string(
-                lc.wallet.txns.read().await.current.get(&tx.txid()).unwrap().notes[0]
+                lc.wallet.txns.read().await.current.get(&tx.txid()).unwrap().s_notes[0]
                     .witnesses
                     .get_from_last(9)
                     .unwrap()
@@ -1527,7 +1540,7 @@ mod test {
         assert_eq!(
             incw_to_string(&notes[0].witness),
             incw_to_string(
-                lc.wallet.txns.read().await.current.get(&tx.txid()).unwrap().notes[0]
+                lc.wallet.txns.read().await.current.get(&tx.txid()).unwrap().s_notes[0]
                     .witnesses
                     .last()
                     .unwrap()
