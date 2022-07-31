@@ -8,7 +8,7 @@ use crate::{
     compact_formats::RawTransaction,
     grpc_connector::GrpcConnector,
     lightclient::lightclient_config::MAX_REORG,
-    lightwallet::{self, data::WalletTx, message::Message, now, LightWallet},
+    lightwallet::{self, data::WalletTx, keys::KeystoresKind, message::Message, now, LightWallet},
 };
 use futures::future::join_all;
 use json::{array, object, JsonValue};
@@ -1618,6 +1618,21 @@ impl LightClient {
         };
 
         result.map(|(txid, _)| txid)
+    }
+
+    pub fn do_wallet_kind_sync(&self) -> String {
+        Runtime::new()
+            .unwrap()
+            .block_on(async move { self.do_wallet_kind().await })
+    }
+
+    pub async fn do_wallet_kind(&self) -> String {
+        match self.wallet.keys().read().await.as_kind() {
+            KeystoresKind::Memory => "memory",
+            #[cfg(feature = "ledger-support")]
+            KeystoresKind::Ledger => "ledger",
+        }
+        .to_string()
     }
 }
 

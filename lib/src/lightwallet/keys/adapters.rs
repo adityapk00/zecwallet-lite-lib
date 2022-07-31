@@ -30,6 +30,12 @@ use crate::lightwallet::keys::ledger::{LedgerBuilder, LedgerError, LedgerKeystor
 
 use super::Keystore;
 
+pub enum KeystoresKind {
+    Memory,
+    #[cfg(feature = "ledger-support")]
+    Ledger,
+}
+
 #[derive(From)]
 /// Provide enum-based dispatch to different keystores
 pub enum Keystores {
@@ -103,6 +109,14 @@ impl Keystores {
 }
 
 impl Keystores {
+    pub fn as_kind(&self) -> KeystoresKind {
+        match self {
+            Self::Memory(_) => KeystoresKind::Memory,
+            #[cfg(feature = "ledger-support")]
+            Self::Ledger(_) => KeystoresKind::Ledger,
+        }
+    }
+
     pub fn config(&self) -> LightClientConfig {
         match self {
             Self::Memory(this) => this.config(),
