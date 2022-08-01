@@ -115,7 +115,7 @@ impl<P: Parameters> ShieldedOutput<SaplingDomain<P>, 52_usize> for CompactSaplin
     }
 }
 
-fn vec_to_array<'a, T, const N: usize>(vec: &'a Vec<T>) -> &'a [T; N] {
+pub fn vec_to_array<'a, T, const N: usize>(vec: &'a Vec<T>) -> &'a [T; N] {
     <&[T; N]>::try_from(&vec[..]).unwrap()
 }
 

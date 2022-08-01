@@ -74,7 +74,7 @@ impl UpdateNotes {
             wallet_txns
                 .write()
                 .await
-                .set_note_witnesses(&txid, &nullifier, witnesses);
+                .set_s_note_witnesses(&txid, &nullifier, witnesses);
         }
     }
 
@@ -151,14 +151,15 @@ impl UpdateNotes {
                             let spent_at_height = BlockHeight::from_u32(spent_height as u32);
 
                             // Mark this note as being spent
-                            let value =
-                                wallet_txns
-                                    .write()
-                                    .await
-                                    .mark_txid_nf_spent(txid, &nf, &spent_txid, spent_at_height);
+                            let value = wallet_txns.write().await.mark_txid_s_nf_spent(
+                                &txid,
+                                &nf,
+                                &spent_txid,
+                                spent_at_height,
+                            );
 
                             // Record the future tx, the one that has spent the nullifiers recieved in this Tx in the wallet
-                            wallet_txns.write().await.add_new_spent(
+                            wallet_txns.write().await.add_new_s_spent(
                                 spent_txid,
                                 spent_at_height,
                                 false,

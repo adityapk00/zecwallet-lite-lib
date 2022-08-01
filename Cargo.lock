@@ -782,7 +782,7 @@ checksum = "3f107b87b6afc2a64fd13cac55fe06d6c8859f12d4b14cbcdd2c67d0976781be"
 [[package]]
 name = "equihash"
 version = "0.2.0"
-source = "git+https://github.com/zcash/librustzcash?rev=09567fc280463f5797a77f1d764205be8ad8e64a#09567fc280463f5797a77f1d764205be8ad8e64a"
+source = "git+https://github.com/adityapk00/librustzcash?rev=adf49f8b848a5ac85e1476354614eeae9880206a#adf49f8b848a5ac85e1476354614eeae9880206a"
 dependencies = [
  "blake2b_simd",
  "byteorder",
@@ -791,7 +791,7 @@ dependencies = [
 [[package]]
 name = "f4jumble"
 version = "0.1.0"
-source = "git+https://github.com/zcash/librustzcash?rev=09567fc280463f5797a77f1d764205be8ad8e64a#09567fc280463f5797a77f1d764205be8ad8e64a"
+source = "git+https://github.com/adityapk00/librustzcash?rev=adf49f8b848a5ac85e1476354614eeae9880206a#adf49f8b848a5ac85e1476354614eeae9880206a"
 dependencies = [
  "blake2b_simd",
 ]
@@ -1662,8 +1662,7 @@ checksum = "ff011a302c396a5197692431fc1948019154afc178baf7d8e37367442a4601cf"
 [[package]]
 name = "orchard"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7619db7f917afd9b1139044c595fab1b6166de2db62317794b5f5e34a2104ae1"
+source = "git+https://github.com/adityapk00/orchard?rev=0a960a380f4e9c3472c9260f3df61cd5e50d51b0#0a960a380f4e9c3472c9260f3df61cd5e50d51b0"
 dependencies = [
  "aes",
  "bitvec",
@@ -3622,7 +3621,7 @@ dependencies = [
 [[package]]
 name = "zcash_address"
 version = "0.1.0"
-source = "git+https://github.com/zcash/librustzcash?rev=09567fc280463f5797a77f1d764205be8ad8e64a#09567fc280463f5797a77f1d764205be8ad8e64a"
+source = "git+https://github.com/adityapk00/librustzcash?rev=adf49f8b848a5ac85e1476354614eeae9880206a#adf49f8b848a5ac85e1476354614eeae9880206a"
 dependencies = [
  "bech32",
  "bs58",
@@ -3633,7 +3632,7 @@ dependencies = [
 [[package]]
 name = "zcash_client_backend"
 version = "0.5.0"
-source = "git+https://github.com/zcash/librustzcash?rev=09567fc280463f5797a77f1d764205be8ad8e64a#09567fc280463f5797a77f1d764205be8ad8e64a"
+source = "git+https://github.com/adityapk00/librustzcash?rev=adf49f8b848a5ac85e1476354614eeae9880206a#adf49f8b848a5ac85e1476354614eeae9880206a"
 dependencies = [
  "base64",
  "bech32",
@@ -3660,7 +3659,7 @@ dependencies = [
 [[package]]
 name = "zcash_encoding"
 version = "0.1.0"
-source = "git+https://github.com/zcash/librustzcash?rev=09567fc280463f5797a77f1d764205be8ad8e64a#09567fc280463f5797a77f1d764205be8ad8e64a"
+source = "git+https://github.com/adityapk00/librustzcash?rev=adf49f8b848a5ac85e1476354614eeae9880206a#adf49f8b848a5ac85e1476354614eeae9880206a"
 dependencies = [
  "byteorder",
  "nonempty",
@@ -3669,7 +3668,7 @@ dependencies = [
 [[package]]
 name = "zcash_note_encryption"
 version = "0.1.0"
-source = "git+https://github.com/zcash/librustzcash?rev=09567fc280463f5797a77f1d764205be8ad8e64a#09567fc280463f5797a77f1d764205be8ad8e64a"
+source = "git+https://github.com/adityapk00/librustzcash?rev=adf49f8b848a5ac85e1476354614eeae9880206a#adf49f8b848a5ac85e1476354614eeae9880206a"
 dependencies = [
  "chacha20",
  "chacha20poly1305",
@@ -3680,7 +3679,7 @@ dependencies = [
 [[package]]
 name = "zcash_primitives"
 version = "0.7.0"
-source = "git+https://github.com/zcash/librustzcash?rev=09567fc280463f5797a77f1d764205be8ad8e64a#09567fc280463f5797a77f1d764205be8ad8e64a"
+source = "git+https://github.com/adityapk00/librustzcash?rev=adf49f8b848a5ac85e1476354614eeae9880206a#adf49f8b848a5ac85e1476354614eeae9880206a"
 dependencies = [
  "aes",
  "bip0039",
@@ -3709,6 +3708,7 @@ dependencies = [
  "secp256k1",
  "sha2 0.9.9",
  "subtle 2.4.1",
+ "zcash_address",
  "zcash_encoding",
  "zcash_note_encryption",
 ]
@@ -3716,8 +3716,7 @@ dependencies = [
 [[package]]
 name = "zcash_proofs"
 version = "0.7.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "98bf5f6af051dd929263f279b21b9c04c1f30116c70f3c190de2566677f245ef"
+source = "git+https://github.com/adityapk00/librustzcash?rev=adf49f8b848a5ac85e1476354614eeae9880206a#adf49f8b848a5ac85e1476354614eeae9880206a"
 dependencies = [
  "bellman",
  "blake2b_simd",
@@ -3736,7 +3735,7 @@ dependencies = [
 
 [[package]]
 name = "zecwallet-cli"
-version = "1.8.0-beta1"
+version = "1.8.0-beta2"
 dependencies = [
  "byteorder",
  "clap",
@@ -3766,6 +3765,7 @@ dependencies = [
  "group",
  "hex 0.3.2",
  "http",
+ "incrementalmerkletree",
  "json",
  "jubjub",
  "lazy_static",
@@ -3818,8 +3818,3 @@ dependencies = [
  "syn",
  "synstructure",
 ]
-
-[[patch.unused]]
-name = "zcash_proofs"
-version = "0.7.0"
-source = "git+https://github.com/zcash/librustzcash?rev=09567fc280463f5797a77f1d764205be8ad8e64a#09567fc280463f5797a77f1d764205be8ad8e64a"

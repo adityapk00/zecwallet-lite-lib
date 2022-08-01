@@ -5,7 +5,6 @@ use crate::{
 use futures::{stream::FuturesUnordered, StreamExt};
 use log::info;
 use orchard::{keys::IncomingViewingKey, note_encryption::OrchardDomain};
-use prost::Message;
 use std::convert::TryFrom;
 use zcash_note_encryption::batch::try_compact_note_decryption;
 
@@ -146,8 +145,6 @@ impl<P: consensus::Parameters + Send + Sync + 'static> TrialDecryptions<P> {
 
                 {
                     // Orchard
-                    let actions_total = ctx.actions.len();
-
                     let orchard_actions = ctx
                         .actions
                         .into_iter()
@@ -174,8 +171,8 @@ impl<P: consensus::Parameters + Send + Sync + 'static> TrialDecryptions<P> {
                     // }
 
                     let decrypts = try_compact_note_decryption(o_ivks.as_ref(), orchard_actions.as_ref());
-                    for (dec_num, maybe_decrypted) in decrypts.into_iter().enumerate() {
-                        if let Some((note, to)) = maybe_decrypted {
+                    for (output_num, maybe_decrypted) in decrypts.into_iter().enumerate() {
+                        if let Some(((note, _to), ivk_num)) = maybe_decrypted {
                             // println!(
                             //     "An orchard note was decrypted! {}:{:?}",
                             //     note.value().inner(),
@@ -183,17 +180,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> TrialDecryptions<P> {
                             // );
                             wallet_tx = true;
 
-                            let mut action_bytes = vec![];
-                            orchard_actions
-                                .get(dec_num)
-                                .unwrap()
-                                .1
-                                .encode(&mut action_bytes)
-                                .unwrap();
-
                             let ctx_hash = ctx_hash.clone();
-                            let output_num = dec_num % actions_total;
-                            let ivk_num = dec_num / actions_total;
 
                             let keys = keys.read().await;
                             let detected_txid_sender = detected_txid_sender.clone();
@@ -201,14 +188,22 @@ impl<P: consensus::Parameters + Send + Sync + 'static> TrialDecryptions<P> {
                             let fvk = keys.okeys[ivk_num].fvk();
                             let have_spending_key = keys.have_orchard_spending_key(fvk);
 
+                            // Tell the orchard witness tree to track this note.
+                            bsync_data
+                                .read()
+                                .await
+                                .block_data
+                                .track_orchard_note(cb.height, tx_num, output_num as u32)
+                                .await;
+
                             let txid = WalletTx::new_txid(&ctx_hash);
                             wallet_txns.write().await.add_new_orchard_note(
                                 txid,
                                 height,
                                 false,
                                 timestamp,
-                                action_bytes,
                                 note,
+                                (height.into(), tx_num, output_num as u32),
                                 fvk,
                                 have_spending_key,
                             );
@@ -224,7 +219,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> TrialDecryptions<P> {
                 {
                     // Sapling
                     let outputs_total = ctx.outputs.len();
-
+                    // if outputs_total < 100 {
                     let outputs = ctx
                         .outputs
                         .into_iter()
@@ -235,12 +230,11 @@ impl<P: consensus::Parameters + Send + Sync + 'static> TrialDecryptions<P> {
                     let decrypts = try_compact_note_decryption(s_ivks.as_ref(), outputs.as_ref());
 
                     for (dec_num, maybe_decrypted) in decrypts.into_iter().enumerate() {
-                        if let Some((note, to)) = maybe_decrypted {
+                        if let Some(((note, to), ivk_num)) = maybe_decrypted {
                             wallet_tx = true;
 
                             let ctx_hash = ctx_hash.clone();
                             let output_num = dec_num % outputs_total;
-                            let ivk_num = dec_num / outputs_total;
 
                             let keys = keys.clone();
                             let bsync_data = bsync_data.clone();
@@ -263,7 +257,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> TrialDecryptions<P> {
                                     .await?;
 
                                 let txid = WalletTx::new_txid(&ctx_hash);
-                                let nullifier = note.nf(&extfvk.fvk.vk, witness.position() as u64);
+                                let nullifier = note.nf(&extfvk.fvk.vk.nk, witness.position() as u64);
 
                                 wallet_txns.write().await.add_new_sapling_note(
                                     txid.clone(),
@@ -288,6 +282,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> TrialDecryptions<P> {
                             }));
                         }
                     }
+                    // }
                 }
 
                 // Check option to see if we are fetching all txns.

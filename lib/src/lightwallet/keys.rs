@@ -474,6 +474,14 @@ impl<P: consensus::Parameters> Keys<P> {
             .collect()
     }
 
+    pub fn get_all_spendable_oaddresses(&self) -> Vec<String> {
+        self.okeys
+            .iter()
+            .filter(|ok| ok.have_spending_key())
+            .map(|ok| ok.unified_address.encode(self.config.get_network()))
+            .collect()
+    }
+
     pub fn get_all_spendable_zaddresses(&self) -> Vec<String> {
         self.zkeys
             .iter()
@@ -500,6 +508,14 @@ impl<P: consensus::Parameters> Keys<P> {
             .find(|ok| ok.fvk == *fvk)
             .map(|ok| ok.have_spending_key())
             .unwrap_or(false)
+    }
+
+    pub fn get_orchard_sk_for_fvk(&self, fvk: &orchard::keys::FullViewingKey) -> Option<orchard::keys::SpendingKey> {
+        self.okeys
+            .iter()
+            .find(|ok| ok.fvk == *fvk)
+            .map(|osk| osk.sk.clone())
+            .flatten()
     }
 
     pub fn get_extsk_for_extfvk(&self, extfvk: &ExtendedFullViewingKey) -> Option<ExtendedSpendingKey> {
@@ -886,6 +902,7 @@ impl<P: consensus::Parameters> Keys<P> {
     pub fn is_shielded_address(addr: &String, config: &LightClientConfig<P>) -> bool {
         match address::RecipientAddress::decode(&config.get_params(), addr) {
             Some(address::RecipientAddress::Shielded(_)) => true,
+            Some(address::RecipientAddress::Unified(_)) => true,
             _ => false,
         }
     }

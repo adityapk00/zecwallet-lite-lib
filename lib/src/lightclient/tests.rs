@@ -576,7 +576,7 @@ async fn z_to_z_scan_together() {
             tree
         });
     let witness = IncrementalWitness::from_tree(&tree);
-    let nf = note.nf(&extfvk1.fvk.vk, witness.position() as u64);
+    let nf = note.nf(&extfvk1.fvk.vk.nk, witness.position() as u64);
 
     let pa = if let Some(RecipientAddress::Shielded(pa)) = RecipientAddress::decode(&config.get_params(), EXT_ZADDR) {
         pa

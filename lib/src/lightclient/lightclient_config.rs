@@ -75,6 +75,10 @@ impl Parameters for UnitTestNetwork {
     fn b58_script_address_prefix(&self) -> [u8; 2] {
         constants::mainnet::B58_SCRIPT_ADDRESS_PREFIX
     }
+
+    fn address_network(&self) -> Option<zcash_address::Network> {
+        Some(zcash_address::Network::Main)
+    }
 }
 
 pub const UNITTEST_NETWORK: UnitTestNetwork = UnitTestNetwork;
@@ -298,7 +302,7 @@ impl<P: consensus::Parameters> LightClientConfig<P> {
         }
 
         info!("Getting sapling tree from LightwalletD at height {}", height);
-        match GrpcConnector::get_sapling_tree(self.server.clone(), height).await {
+        match GrpcConnector::get_merkle_tree(self.server.clone(), height).await {
             Ok(tree_state) => {
                 let hash = tree_state.hash.clone();
                 let tree = tree_state.tree.clone();

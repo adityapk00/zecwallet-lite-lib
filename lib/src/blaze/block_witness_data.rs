@@ -1,3 +1,5 @@
+use crate::compact_formats::vec_to_array;
+use crate::lightwallet::MAX_CHECKPOINTS;
 use crate::{
     compact_formats::{CompactBlock, CompactTx, TreeState},
     grpc_connector::GrpcConnector,
@@ -8,11 +10,15 @@ use crate::{
     lightwallet::{
         data::{BlockData, WalletTx, WitnessCache},
         wallet_txns::WalletTxns,
+        MERKLE_DEPTH,
     },
 };
-
 use futures::{stream::FuturesOrdered, StreamExt};
 use http::Uri;
+use incrementalmerkletree::{bridgetree::BridgeTree, Tree};
+use log::info;
+use orchard::{note::ExtractedNoteCommitment, tree::MerkleHashOrchard};
+use std::collections::HashMap;
 use std::{sync::Arc, time::Duration};
 use tokio::{
     sync::{
@@ -32,7 +38,7 @@ use zcash_primitives::{
 use super::{fixed_size_buffer::FixedSizeBuffer, sync_status::SyncStatus};
 
 pub struct BlockAndWitnessData {
-    // List of all blocks and their hashes/commitment trees. Stored from smallest block height to tallest block height
+    // List of all blocks and their hashes/commitment trees. blocks[0] is the tallest block height in this batch
     blocks: Arc<RwLock<Vec<BlockData>>>,
 
     // List of existing blocks in the wallet. Used for reorgs
@@ -48,6 +54,12 @@ pub struct BlockAndWitnessData {
     // Heighest verified tree
     verified_tree: Option<TreeState>,
 
+    // Orchard notes to track. block height -> tx_num -> output_num
+    orchard_note_positions: Arc<RwLock<HashMap<u64, HashMap<usize, Vec<u32>>>>>,
+
+    // Orchard witnesses
+    orchard_witnesses: Arc<RwLock<Option<BridgeTree<MerkleHashOrchard, MERKLE_DEPTH>>>>,
+
     // Link to the syncstatus where we can update progress
     sync_status: Arc<RwLock<SyncStatus>>,
 
@@ -62,6 +74,8 @@ impl BlockAndWitnessData {
             verification_list: Arc::new(RwLock::new(vec![])),
             batch_size: 1_000,
             verified_tree: None,
+            orchard_note_positions: Arc::new(RwLock::new(HashMap::new())),
+            orchard_witnesses: Arc::new(RwLock::new(None)),
             sync_status,
             sapling_activation_height: config.sapling_activation_height,
         }
@@ -75,7 +89,12 @@ impl BlockAndWitnessData {
         s
     }
 
-    pub async fn setup_sync(&mut self, existing_blocks: Vec<BlockData>, verified_tree: Option<TreeState>) {
+    pub async fn setup_sync(
+        &mut self,
+        existing_blocks: Vec<BlockData>,
+        verified_tree: Option<TreeState>,
+        orchard_witnesses: Arc<RwLock<Option<BridgeTree<MerkleHashOrchard, MERKLE_DEPTH>>>>,
+    ) {
         if !existing_blocks.is_empty() {
             if existing_blocks.first().unwrap().height < existing_blocks.last().unwrap().height {
                 panic!("Blocks are in wrong order");
@@ -85,6 +104,8 @@ impl BlockAndWitnessData {
         self.verified_tree = verified_tree;
 
         self.blocks.write().await.clear();
+
+        self.orchard_witnesses = orchard_witnesses;
 
         self.existing_blocks.write().await.clear();
         self.existing_blocks.write().await.extend(existing_blocks);
@@ -369,6 +390,110 @@ impl BlockAndWitnessData {
         return (h, tx);
     }
 
+    pub async fn track_orchard_note(&self, height: u64, tx_num: usize, output_num: u32) {
+        // Remember this note position
+        let mut block_map = self.orchard_note_positions.write().await;
+
+        let txid_map = block_map.entry(height).or_default();
+        let output_nums = txid_map.entry(tx_num).or_default();
+        output_nums.push(output_num);
+    }
+
+    pub async fn update_orchard_spends_and_witnesses(&self, wallet_txns: Arc<RwLock<WalletTxns>>) {
+        // Go over all the blocks
+        if let Some(orchard_witnesses) = self.orchard_witnesses.write().await.as_mut() {
+            // Read Lock
+            let blocks = self.blocks.read().await;
+            if blocks.is_empty() {
+                return;
+            }
+
+            let mut orchard_note_positions = self.orchard_note_positions.write().await;
+
+            // The last 100 blocks need to be checkpointed
+            let mut last_hundred = (blocks[0].height as i64) - (MAX_CHECKPOINTS as i64);
+            if last_hundred < 0 {
+                last_hundred = 0;
+            }
+
+            // List of all the wallet's nullifiers
+            let o_nullifiers = wallet_txns.read().await.get_unspent_o_nullifiers();
+
+            for i in (0..blocks.len()).rev() {
+                let cb = &blocks.get(i as usize).unwrap().cb();
+
+                for (tx_num, ctx) in cb.vtx.iter().enumerate() {
+                    for (output_num, action) in ctx.actions.iter().enumerate() {
+                        let output_num = output_num as u32;
+                        orchard_witnesses.append(&MerkleHashOrchard::from_cmx(
+                            &ExtractedNoteCommitment::from_bytes(vec_to_array(&action.cmx)).unwrap(),
+                        ));
+
+                        // Check if this orchard note needs to be tracked
+                        if let Some(block_map) = orchard_note_positions.get(&cb.height) {
+                            if let Some(output_nums) = block_map.get(&tx_num) {
+                                if output_nums.contains(&output_num) {
+                                    let pos = orchard_witnesses.witness();
+
+                                    // Update the wallet_tx with the note
+                                    wallet_txns
+                                        .write()
+                                        .await
+                                        .set_o_note_witness((cb.height, tx_num, output_num), pos);
+                                    info!("Witnessing note at position {:?}", pos.unwrap());
+                                }
+                            }
+                        }
+
+                        // Check if the nullifier in this action belongs to us, which means it has been spent
+                        for (wallet_nullifier, value, source_txid) in o_nullifiers.iter() {
+                            if orchard::note::Nullifier::from_bytes(vec_to_array(&action.nullifier)).unwrap()
+                                == *wallet_nullifier
+                            {
+                                // This was our spend.
+                                let txid = WalletTx::new_txid(&ctx.hash);
+
+                                info!("An orchard note from {} was spent in {}", source_txid, txid);
+
+                                // 1. Mark the note as spent
+                                wallet_txns.write().await.mark_txid_o_nf_spent(
+                                    source_txid,
+                                    &wallet_nullifier,
+                                    &txid,
+                                    cb.height(),
+                                );
+
+                                // 2. Update the spent notes in the wallet
+                                let maybe_position = wallet_txns.write().await.add_new_o_spent(
+                                    txid,
+                                    cb.height(),
+                                    false,
+                                    cb.time,
+                                    *wallet_nullifier,
+                                    *value,
+                                    *source_txid,
+                                );
+
+                                // 3. Remove the note from the incremental witness tree tracking.
+                                if let Some(position) = maybe_position {
+                                    orchard_witnesses.remove_witness(position);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // See if we need to checkpoint
+                if cb.height >= last_hundred as u64 {
+                    orchard_witnesses.checkpoint();
+                }
+            }
+
+            orchard_witnesses.garbage_collect();
+            orchard_note_positions.clear();
+        }
+    }
+
     async fn wait_for_first_block(&self) -> u64 {
         while self.blocks.read().await.is_empty() {
             yield_now().await;
@@ -445,7 +570,7 @@ impl BlockAndWitnessData {
             let tree = if prev_height < self.sapling_activation_height {
                 CommitmentTree::empty()
             } else {
-                let tree_state = GrpcConnector::get_sapling_tree(uri, prev_height).await?;
+                let tree_state = GrpcConnector::get_merkle_tree(uri, prev_height).await?;
                 let sapling_tree = hex::decode(&tree_state.tree).unwrap();
                 // self.verification_list.write().await.push(tree_state);
                 CommitmentTree::read(&sapling_tree[..]).map_err(|e| format!("{}", e))?
@@ -619,7 +744,8 @@ mod test {
         let cb = FakeCompactBlock::new(1, BlockHash([0u8; 32])).into_cb();
         let blks = vec![BlockData::new(cb)];
 
-        nw.setup_sync(blks.clone(), None).await;
+        let orchard_witnesses = Arc::new(RwLock::new(None));
+        nw.setup_sync(blks.clone(), None, orchard_witnesses).await;
         let finished_blks = nw.finish_get_blocks(1).await;
 
         assert_eq!(blks[0].hash(), finished_blks[0].hash());
@@ -634,7 +760,9 @@ mod test {
         );
 
         let existing_blocks = FakeCompactBlockList::new(200).into_blockdatas();
-        nw.setup_sync(existing_blocks.clone(), None).await;
+
+        let orchard_witnesses = Arc::new(RwLock::new(None));
+        nw.setup_sync(existing_blocks.clone(), None, orchard_witnesses).await;
         let finished_blks = nw.finish_get_blocks(100).await;
 
         assert_eq!(finished_blks.len(), 100);
@@ -660,7 +788,9 @@ mod test {
 
         let sync_status = Arc::new(RwLock::new(SyncStatus::default()));
         let mut nw = BlockAndWitnessData::new(&config, sync_status);
-        nw.setup_sync(vec![], None).await;
+
+        let orchard_witnesses = Arc::new(RwLock::new(None));
+        nw.setup_sync(vec![], None, orchard_witnesses).await;
 
         let (reorg_tx, mut reorg_rx) = unbounded_channel();
 
@@ -708,7 +838,9 @@ mod test {
         let end_block = blocks.last().unwrap().height;
 
         let mut nw = BlockAndWitnessData::new_with_batchsize(&config, 25);
-        nw.setup_sync(existing_blocks, None).await;
+
+        let orchard_witnesses = Arc::new(RwLock::new(None));
+        nw.setup_sync(existing_blocks, None, orchard_witnesses).await;
 
         let (reorg_tx, mut reorg_rx) = unbounded_channel();
 
@@ -801,7 +933,9 @@ mod test {
 
         let sync_status = Arc::new(RwLock::new(SyncStatus::default()));
         let mut nw = BlockAndWitnessData::new(&config, sync_status);
-        nw.setup_sync(existing_blocks, None).await;
+
+        let orchard_witnesses = Arc::new(RwLock::new(None));
+        nw.setup_sync(existing_blocks, None, orchard_witnesses).await;
 
         let (reorg_tx, mut reorg_rx) = unbounded_channel();
 

@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::ServerCert;
 use crate::compact_formats::compact_tx_streamer_client::CompactTxStreamerClient;
 use crate::compact_formats::{
     BlockId, BlockRange, ChainSpec, CompactBlock, Empty, LightdInfo, PriceRequest, PriceResponse, RawTransaction,
     TransparentAddressBlockFilter, TreeState, TxFilter,
 };
+use crate::ServerCert;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use log::warn;
@@ -15,14 +15,13 @@ use tokio::sync::mpsc::{Sender, UnboundedReceiver};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
-use tonic::transport::{ClientTlsConfig, Certificate};
+use tonic::transport::{Certificate, ClientTlsConfig};
 use tonic::{
     transport::{Channel, Error},
     Request,
 };
 use zcash_primitives::consensus::{self, BlockHeight, BranchId};
 use zcash_primitives::transaction::{Transaction, TxId};
-
 
 #[derive(Clone)]
 pub struct GrpcConnector {
@@ -72,7 +71,7 @@ impl GrpcConnector {
             let uri = uri.clone();
             while let Some((height, result_tx)) = rx.recv().await {
                 result_tx
-                    .send(Self::get_sapling_tree(uri.clone(), height).await)
+                    .send(Self::get_merkle_tree(uri.clone(), height).await)
                     .unwrap()
             }
         });
@@ -342,7 +341,7 @@ impl GrpcConnector {
         Ok(())
     }
 
-    pub async fn get_sapling_tree(uri: http::Uri, height: u64) -> Result<TreeState, String> {
+    pub async fn get_merkle_tree(uri: http::Uri, height: u64) -> Result<TreeState, String> {
         let client = Arc::new(GrpcConnector::new(uri));
         let mut client = client
             .get_client()

@@ -1,12 +1,14 @@
 use std::sync::Arc;
 
 use http::Uri;
+use incrementalmerkletree::bridgetree::BridgeTree;
+use orchard::tree::MerkleHashOrchard;
 use tokio::sync::RwLock;
 use zcash_primitives::consensus;
 
 use super::{block_witness_data::BlockAndWitnessData, sync_status::SyncStatus};
 use crate::compact_formats::TreeState;
-use crate::lightwallet::WalletOptions;
+use crate::lightwallet::{WalletOptions, MERKLE_DEPTH};
 use crate::{lightclient::lightclient_config::LightClientConfig, lightwallet::data::BlockData};
 
 pub struct BlazeSyncData {
@@ -39,6 +41,7 @@ impl BlazeSyncData {
         batch_num: usize,
         existing_blocks: Vec<BlockData>,
         verified_tree: Option<TreeState>,
+        orchard_witnesses: Arc<RwLock<Option<BridgeTree<MerkleHashOrchard, MERKLE_DEPTH>>>>,
         wallet_options: WalletOptions,
     ) {
         if start_block < end_block {
@@ -53,7 +56,9 @@ impl BlazeSyncData {
 
         self.wallet_options = wallet_options;
 
-        self.block_data.setup_sync(existing_blocks, verified_tree).await;
+        self.block_data
+            .setup_sync(existing_blocks, verified_tree, orchard_witnesses)
+            .await;
     }
 
     // Finish up the sync

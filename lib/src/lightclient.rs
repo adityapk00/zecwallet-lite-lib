@@ -8,11 +8,13 @@ use crate::{
     compact_formats::RawTransaction,
     grpc_connector::GrpcConnector,
     lightclient::lightclient_config::MAX_REORG,
-    lightwallet::{self, data::WalletTx, message::Message, now, LightWallet},
+    lightwallet::{self, data::WalletTx, message::Message, now, LightWallet, MAX_CHECKPOINTS, MERKLE_DEPTH},
 };
 use futures::{stream::FuturesUnordered, StreamExt};
+use incrementalmerkletree::bridgetree::BridgeTree;
 use json::{array, object, JsonValue};
 use log::{error, info, warn};
+use orchard::tree::MerkleHashOrchard;
 use std::{
     cmp,
     collections::HashSet,
@@ -34,6 +36,7 @@ use zcash_primitives::{
     block::BlockHash,
     consensus::{self, BlockHeight, BranchId},
     memo::{Memo, MemoBytes},
+    merkle_tree::CommitmentTree,
     transaction::{components::amount::DEFAULT_FEE, Transaction, TxId},
 };
 use zcash_proofs::prover::LocalTxProver;
@@ -448,6 +451,15 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
     }
 
     pub async fn do_balance(&self) -> JsonValue {
+        // Collect UA addresses
+        let mut ua_addresses = vec![];
+        for uaddress in self.wallet.keys().read().await.get_all_uaddresses() {
+            ua_addresses.push(object! {
+                "address" => uaddress.clone(),
+                "balance" => self.wallet.uabalance(Some(uaddress.clone())).await,
+            });
+        }
+
         // Collect z addresses
         let mut z_addresses = vec![];
         for zaddress in self.wallet.keys().read().await.get_all_zaddresses() {
@@ -473,11 +485,13 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
         }
 
         object! {
+            "uabalance" => self.wallet.uabalance(None).await,
             "zbalance"           => self.wallet.zbalance(None).await,
             "verified_zbalance"  => self.wallet.verified_zbalance(None).await,
             "spendable_zbalance" => self.wallet.spendable_zbalance(None).await,
             "unverified_zbalance"   => self.wallet.unverified_zbalance(None).await,
             "tbalance"           => self.wallet.tbalance(None).await,
+            "ua_addresses" => ua_addresses,
             "z_addresses"        => z_addresses,
             "t_addresses"        => t_addresses,
         }
@@ -647,25 +661,25 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
         let anchor_height = BlockHeight::from_u32(self.wallet.get_anchor_height().await);
 
         {
-            // First, collect all extfvk's that are spendable (i.e., we have the private key)
-            let spendable_address: HashSet<String> = self
+            // Collect orchard notes
+            // First, collect all UA's that are spendable (i.e., we have the private key)
+            let spendable_oaddress: HashSet<String> = self
                 .wallet
                 .keys()
                 .read()
                 .await
-                .get_all_spendable_zaddresses()
+                .get_all_spendable_oaddresses()
                 .into_iter()
                 .collect();
 
-            // Collect orchard notes
             self.wallet.txns.read().await.current.iter()
             .flat_map( |(txid, wtx)| {
-                let spendable_address = spendable_address.clone();
+                let spendable_address = spendable_oaddress.clone();
                 wtx.o_notes.iter().filter_map(move |nd|
                     if !all_notes && nd.spent.is_some() {
                         None
                     } else {
-                        let address = LightWallet::<P>::orchard_ua_address (&self.config, &nd.note_address);
+                        let address = LightWallet::<P>::orchard_ua_address(&self.config, &nd.note.recipient());
                         let spendable = spendable_address.contains(&address) &&
                                                 wtx.block <= anchor_height && nd.spent.is_none() && nd.unconfirmed_spent.is_none();
 
@@ -674,7 +688,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
                             "created_in_block"   => created_block,
                             "datetime"           => wtx.datetime,
                             "created_in_txid"    => format!("{}", txid),
-                            "value"              => nd.note_value,
+                            "value"              => nd.note.value().inner(),
                             "unconfirmed"        => wtx.unconfirmed,
                             "is_change"          => nd.is_change,
                             "address"            => address,
@@ -697,9 +711,19 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
             });
 
             // Collect Sapling notes
+            // First, collect all extfvk's that are spendable (i.e., we have the private key)
+            let spendable_zaddress: HashSet<String> = self
+                .wallet
+                .keys()
+                .read()
+                .await
+                .get_all_spendable_zaddresses()
+                .into_iter()
+                .collect();
+
             self.wallet.txns.read().await.current.iter()
                 .flat_map( |(txid, wtx)| {
-                    let spendable_address = spendable_address.clone();
+                    let spendable_address = spendable_zaddress.clone();
                     wtx.s_notes.iter().filter_map(move |nd|
                         if !all_notes && nd.spent.is_some() {
                             None
@@ -933,9 +957,9 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
                         "datetime"     => v.datetime,
                         "position"     => i,
                         "txid"         => format!("{}", v.txid),
-                        "amount"       => nd.note_value,
+                        "amount"       => nd.note.value().inner(),
                         "zec_price"    => v.zec_price.map(|p| (p * 100.0).round() / 100.0),
-                        "address"      => LightWallet::<P>::orchard_ua_address(&self.config, &nd.note_address),
+                        "address"      => LightWallet::<P>::orchard_ua_address(&self.config, &nd.note.recipient()),
                         "memo"         => LightWallet::<P>::memo_str(nd.memo.clone())
                     };
 
@@ -1429,6 +1453,43 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
         let start_block = latest_block;
         let end_block = last_scanned_height + 1;
 
+        // Make sure that the wallet has an orchard tree first
+        {
+            let mut orchard_witnesses = self.wallet.orchard_witnesses.write().await;
+
+            if orchard_witnesses.is_none() {
+                let tree_state = GrpcConnector::get_merkle_tree(uri.clone(), last_scanned_height).await?;
+                println!(
+                    "Attempting to get orchard tree from block {} with str `{}`",
+                    last_scanned_height, tree_state.orchard_tree
+                );
+
+                // Populate the orchard witnesses from the previous block's frontier
+                let orchard_tree = hex::decode(tree_state.orchard_tree).unwrap();
+                // let o: io::Result<NonEmptyFrontier<MerkleHashOrchard>> =
+                //     LightWallet::<P>::read_nonempty_frontier_v1(&orchard_tree[..]);
+                // if let Ok(frontier) = o {
+                //     let witnesses = BridgeTree::<_, MERKLE_DEPTH>::from_frontier(100, frontier);
+                //     *orchard_witnesses = Some(witnesses);
+                // }
+                let witnesses = if orchard_tree.len() > 0 {
+                    let tree =
+                        CommitmentTree::<MerkleHashOrchard>::read(&orchard_tree[..]).map_err(|e| format!("{}", e))?;
+                    if let Some(frontier) = tree.to_frontier::<MERKLE_DEPTH>().value() {
+                        println!("Creating orchard tree from frontier");
+                        BridgeTree::<_, MERKLE_DEPTH>::from_frontier(MAX_CHECKPOINTS, frontier.clone())
+                    } else {
+                        println!("Creating empty tree");
+                        BridgeTree::<_, MERKLE_DEPTH>::new(MAX_CHECKPOINTS)
+                    }
+                } else {
+                    println!("LightwalletD returned empty orchard tree, creating empty tree");
+                    BridgeTree::<_, MERKLE_DEPTH>::new(MAX_CHECKPOINTS)
+                };
+                *orchard_witnesses = Some(witnesses);
+            }
+        }
+
         // Before we start, we need to do a few things
         // 1. Pre-populate the last 100 blocks, in case of reorgs
         bsync_data
@@ -1440,6 +1501,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
                 batch_num,
                 self.wallet.get_blocks().await,
                 self.wallet.verified_tree.read().await.clone(),
+                self.wallet.orchard_witnesses.clone(),
                 *self.wallet.wallet_options.read().await,
             )
             .await;
@@ -1550,11 +1612,19 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
         info!("Sync finished, doing post-processing");
 
         // Post sync, we have to do a bunch of stuff
-        // 1. Get the last 100 blocks and store it into the wallet, needed for future re-orgs
+        // 1. Update the Orchard witnesses. This calculates the positions of all the notes found in this batch.
+        bsync_data
+            .read()
+            .await
+            .block_data
+            .update_orchard_spends_and_witnesses(self.wallet.txns.clone())
+            .await;
+
+        // 2. Get the last 100 blocks and store it into the wallet, needed for future re-orgs
         let blocks = bsync_data.read().await.block_data.finish_get_blocks(MAX_REORG).await;
         self.wallet.set_blocks(blocks).await;
 
-        // 2. If sync was successfull, also try to get historical prices
+        // 3. If sync was successfull, also try to get historical prices
         self.update_historical_prices().await;
 
         // 4. Remove the witnesses for spent notes more than 100 blocks old, since now there

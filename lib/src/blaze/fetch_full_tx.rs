@@ -264,11 +264,11 @@ impl<P: consensus::Parameters + Send + Sync + 'static> FetchFullTxns<P> {
         // Step 3: Check if any of the nullifiers spent in this Tx are ours. We only need this for unconfirmed txns,
         // because for txns in the block, we will check the nullifiers from the blockdata
         if unconfirmed {
-            let unspent_nullifiers = wallet_txns.read().await.get_unspent_nullifiers();
+            let unspent_nullifiers = wallet_txns.read().await.get_unspent_s_nullifiers();
             if let Some(s_bundle) = tx.sapling_bundle() {
                 for s in s_bundle.shielded_spends.iter() {
                     if let Some((nf, value, txid)) = unspent_nullifiers.iter().find(|(nf, _, _)| *nf == s.nullifier) {
-                        wallet_txns.write().await.add_new_spent(
+                        wallet_txns.write().await.add_new_s_spent(
                             tx.txid(),
                             height,
                             unconfirmed,

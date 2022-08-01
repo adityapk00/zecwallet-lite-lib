@@ -5,19 +5,39 @@ use crate::{
     blaze::fetch_full_tx::FetchFullTxns,
     lightclient::lightclient_config::LightClientConfig,
     lightwallet::{
-        data::SpendableNote,
+        data::SpendableSaplingNote,
         walletzkey::{WalletZKey, WalletZKeyType},
     },
 };
+use incrementalmerkletree::{bridgetree::BridgeTree, Position, Tree};
+use std::collections::BTreeMap;
+use std::convert::TryInto;
+use std::io;
+
+use zcash_encoding::{Optional, Vector};
+use zcash_primitives::{
+    consensus::BlockHeight,
+    merkle_tree::incremental::{read_position, write_position},
+    transaction::components::Amount,
+};
+
+use orchard::{
+    tree::{MerkleHashOrchard, MerklePath},
+    Address,
+};
+
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use futures::Future;
+use incrementalmerkletree::bridgetree::Checkpoint;
+use incrementalmerkletree::Hashable;
 use log::{error, info, warn};
-use orchard::Address;
+
+use orchard::Anchor;
 use std::sync::mpsc;
 use std::{
     cmp,
     collections::HashMap,
-    io::{self, Error, ErrorKind, Read, Write},
+    io::{Error, ErrorKind, Read, Write},
     sync::{atomic::AtomicU64, Arc},
     time::SystemTime,
 };
@@ -28,21 +48,23 @@ use zcash_client_backend::{
     address,
     encoding::{decode_extended_full_viewing_key, decode_extended_spending_key, encode_payment_address},
 };
-use zcash_encoding::{Optional, Vector};
+
+use zcash_primitives::consensus;
 use zcash_primitives::memo::MemoBytes;
+use zcash_primitives::merkle_tree::incremental::{read_bridge, read_leu64_usize, write_bridge, write_usize_leu64};
+use zcash_primitives::merkle_tree::HashSer;
 use zcash_primitives::sapling::prover::TxProver;
-use zcash_primitives::{consensus, transaction};
 use zcash_primitives::{
-    consensus::BlockHeight,
     legacy::Script,
     memo::Memo,
     transaction::{
         builder::Builder,
-        components::{amount::DEFAULT_FEE, Amount, OutPoint, TxOut},
+        components::{amount::DEFAULT_FEE, OutPoint, TxOut},
     },
     zip32::ExtendedFullViewingKey,
 };
 
+use self::data::SpendableOrchardNote;
 use self::{
     data::{BlockData, SaplingNoteData, Utxo, WalletZecPriceInfo},
     keys::Keys,
@@ -59,6 +81,9 @@ pub(crate) mod wallet_txns;
 mod walletokey;
 pub(crate) mod wallettkey;
 mod walletzkey;
+
+pub const MERKLE_DEPTH: u8 = 32;
+pub const MAX_CHECKPOINTS: usize = 100;
 
 pub fn now() -> u64 {
     SystemTime::now()
@@ -170,6 +195,9 @@ pub struct LightWallet<P> {
     // Heighest verified block
     pub(crate) verified_tree: Arc<RwLock<Option<TreeState>>>,
 
+    // The Orchard incremental tree
+    pub(crate) orchard_witnesses: Arc<RwLock<Option<BridgeTree<MerkleHashOrchard, MERKLE_DEPTH>>>>,
+
     // Progress of an outgoing tx
     send_progress: Arc<RwLock<SendProgress>>,
 
@@ -179,7 +207,7 @@ pub struct LightWallet<P> {
 
 impl<P: consensus::Parameters + Send + Sync + 'static> LightWallet<P> {
     pub fn serialized_version() -> u64 {
-        return 24;
+        return 25;
     }
 
     pub fn new(
@@ -198,11 +226,78 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightWallet<P> {
             blocks: Arc::new(RwLock::new(vec![])),
             wallet_options: Arc::new(RwLock::new(WalletOptions::default())),
             config,
+            orchard_witnesses: Arc::new(RwLock::new(None)),
             birthday: AtomicU64::new(height),
             verified_tree: Arc::new(RwLock::new(None)),
             send_progress: Arc::new(RwLock::new(SendProgress::new(0))),
             price: Arc::new(RwLock::new(WalletZecPriceInfo::new())),
         })
+    }
+
+    pub fn read_tree<H: Hashable + HashSer + Ord + Clone, R: Read>(mut reader: R) -> io::Result<BridgeTree<H, 32>> {
+        let _version = reader.read_u64::<LittleEndian>()?;
+
+        let prior_bridges = Vector::read(&mut reader, |r| read_bridge(r))?;
+        let current_bridge = Optional::read(&mut reader, |r| read_bridge(r))?;
+        let saved: BTreeMap<Position, usize> = Vector::read_collected(&mut reader, |mut r| {
+            Ok((read_position(&mut r)?, read_leu64_usize(&mut r)?))
+        })?;
+
+        let checkpoints = Vector::read_collected(&mut reader, |r| Self::read_checkpoint_v2(r))?;
+        let max_checkpoints = read_leu64_usize(&mut reader)?;
+
+        BridgeTree::from_parts(prior_bridges, current_bridge, saved, checkpoints, max_checkpoints).map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "Consistency violation found when attempting to deserialize Merkle tree: {:?}",
+                    err
+                ),
+            )
+        })
+    }
+
+    fn write_tree<H: Hashable + HashSer + Ord, W: Write>(
+        mut writer: W,
+        tree: &BridgeTree<H, MERKLE_DEPTH>,
+    ) -> io::Result<()> {
+        writer.write_u64::<LittleEndian>(Self::serialized_version())?;
+
+        Vector::write(&mut writer, tree.prior_bridges(), |mut w, b| write_bridge(&mut w, b))?;
+        Optional::write(&mut writer, tree.current_bridge().as_ref(), |mut w, b| {
+            write_bridge(&mut w, b)
+        })?;
+        Vector::write_sized(&mut writer, tree.witnessed_indices().iter(), |mut w, (pos, i)| {
+            write_position(&mut w, *pos)?;
+            write_usize_leu64(&mut w, *i)
+        })?;
+        Vector::write(&mut writer, tree.checkpoints(), |w, c| Self::write_checkpoint_v2(w, c))?;
+        write_usize_leu64(&mut writer, tree.max_checkpoints())?;
+
+        Ok(())
+    }
+
+    pub fn write_checkpoint_v2<W: Write>(mut writer: W, checkpoint: &Checkpoint) -> io::Result<()> {
+        write_usize_leu64(&mut writer, checkpoint.bridges_len())?;
+        writer.write_u8(if checkpoint.is_witnessed() { 1 } else { 0 })?;
+        Vector::write_sized(&mut writer, checkpoint.witnessed().iter(), |w, p| write_position(w, *p))?;
+        Vector::write_sized(&mut writer, checkpoint.forgotten().iter(), |mut w, (pos, idx)| {
+            write_position(&mut w, *pos)?;
+            write_usize_leu64(&mut w, *idx)
+        })?;
+
+        Ok(())
+    }
+
+    pub fn read_checkpoint_v2<R: Read>(mut reader: R) -> io::Result<Checkpoint> {
+        Ok(Checkpoint::from_parts(
+            read_leu64_usize(&mut reader)?,
+            reader.read_u8()? == 1,
+            Vector::read_collected(&mut reader, |r| read_position(r))?,
+            Vector::read_collected(&mut reader, |mut r| {
+                Ok((read_position(&mut r)?, read_leu64_usize(&mut r)?))
+            })?,
+        ))
     }
 
     pub async fn read<R: Read>(mut reader: R, config: &LightClientConfig<P>) -> io::Result<Self> {
@@ -290,12 +385,20 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightWallet<P> {
             WalletZecPriceInfo::read(&mut reader)?
         };
 
+        // Reach the orchard tree
+        let orchard_witnesses = if version <= 24 {
+            None
+        } else {
+            Optional::read(&mut reader, |r| Self::read_tree(r))?
+        };
+
         let mut lw = Self {
             keys: Arc::new(RwLock::new(keys)),
             txns: Arc::new(RwLock::new(txns)),
             blocks: Arc::new(RwLock::new(blocks)),
             config: config.clone(),
             wallet_options: Arc::new(RwLock::new(wallet_options)),
+            orchard_witnesses: Arc::new(RwLock::new(orchard_witnesses)),
             birthday: AtomicU64::new(birthday),
             verified_tree: Arc::new(RwLock::new(verified_tree)),
             send_progress: Arc::new(RwLock::new(SendProgress::new(0))),
@@ -351,6 +454,11 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightWallet<P> {
 
         // Price info
         self.price.read().await.write(&mut writer)?;
+
+        // Write the Tree
+        Optional::write(&mut writer, self.orchard_witnesses.read().await.as_ref(), |w, o| {
+            Self::write_tree(w, o)
+        })?;
 
         Ok(())
     }
@@ -683,6 +791,31 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightWallet<P> {
         }
     }
 
+    pub async fn uabalance(&self, addr: Option<String>) -> u64 {
+        self.txns
+            .read()
+            .await
+            .current
+            .values()
+            .map(|tx| {
+                tx.o_notes
+                    .iter()
+                    .filter(|nd| match addr.as_ref() {
+                        Some(a) => *a == LightWallet::<P>::orchard_ua_address(&self.config, &nd.note.recipient()),
+                        None => true,
+                    })
+                    .map(|nd| {
+                        if nd.spent.is_none() && nd.unconfirmed_spent.is_none() {
+                            nd.note.value().inner()
+                        } else {
+                            0
+                        }
+                    })
+                    .sum::<u64>()
+            })
+            .sum::<u64>()
+    }
+
     pub async fn zbalance(&self, addr: Option<String>) -> u64 {
         self.txns
             .read()
@@ -974,7 +1107,9 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightWallet<P> {
         target_amount: Amount,
         transparent_only: bool,
         shield_transparenent: bool,
-    ) -> (Vec<SpendableNote>, Vec<Utxo>, Amount) {
+        allow_sapling: bool,
+        allow_orchard: bool,
+    ) -> (Vec<SpendableOrchardNote>, Vec<SpendableSaplingNote>, Vec<Utxo>, Amount) {
         // First, if we are allowed to pick transparent value, pick them all
         let utxos = if transparent_only || shield_transparenent {
             self.get_utxos()
@@ -994,60 +1129,147 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightWallet<P> {
 
         // If we are allowed only transparent funds or we've selected enough then return
         if transparent_only || transparent_value_selected >= target_amount {
-            return (vec![], utxos, transparent_value_selected);
+            return (vec![], vec![], utxos, transparent_value_selected);
         }
 
-        // Start collecting sapling funds at every allowed offset
-        for anchor_offset in &self.config.anchor_offset {
+        let mut orchard_value_selected = Amount::zero();
+        let mut sapling_value_selected = Amount::zero();
+
+        let mut o_notes = vec![];
+
+        // Collect orchard notes
+        if allow_orchard {
             let keys = self.keys.read().await;
+            let owt = self.orchard_witnesses.read().await;
+            let orchard_witness_tree = owt.as_ref().unwrap();
+
             let mut candidate_notes = self
                 .txns
                 .read()
                 .await
                 .current
                 .iter()
-                .flat_map(|(txid, tx)| tx.s_notes.iter().map(move |note| (*txid, note)))
-                .filter(|(_, note)| note.note.value > 0)
+                .flat_map(|(txid, tx)| tx.o_notes.iter().map(move |note| (*txid, note)))
+                .filter(|(_, note)| note.note.value().inner() > 0)
                 .filter_map(|(txid, note)| {
                     // Filter out notes that are already spent
                     if note.spent.is_some() || note.unconfirmed_spent.is_some() {
                         None
                     } else {
                         // Get the spending key for the selected fvk, if we have it
-                        let extsk = keys.get_extsk_for_extfvk(&note.extfvk);
-                        SpendableNote::from(txid, note, *anchor_offset as usize, &extsk)
+                        let maybe_sk = keys.get_orchard_sk_for_fvk(&note.fvk);
+                        if maybe_sk.is_none() || note.witness_position.is_none() {
+                            None
+                        } else {
+                            let merkle_path = MerklePath::from_parts(
+                                usize::from(note.witness_position.unwrap()) as u32,
+                                orchard_witness_tree
+                                    .authentication_path(
+                                        note.witness_position.unwrap(),
+                                        &orchard_witness_tree.root(0).unwrap(),
+                                    )
+                                    .unwrap()
+                                    .try_into()
+                                    .unwrap(),
+                            );
+
+                            Some(SpendableOrchardNote {
+                                txid,
+                                sk: maybe_sk.unwrap(),
+                                note: note.note.clone(),
+                                merkle_path,
+                            })
+                        }
                     }
                 })
                 .collect::<Vec<_>>();
-            candidate_notes.sort_by(|a, b| b.note.value.cmp(&a.note.value));
+            candidate_notes.sort_by(|a, b| b.note.value().inner().cmp(&a.note.value().inner()));
 
             // Select the minimum number of notes required to satisfy the target value
-            let notes = candidate_notes
+            o_notes = candidate_notes
                 .into_iter()
                 .scan(Amount::zero(), |running_total, spendable| {
                     if *running_total >= (target_amount - transparent_value_selected).unwrap() {
                         None
                     } else {
-                        *running_total += Amount::from_u64(spendable.note.value).unwrap();
+                        *running_total += Amount::from_u64(spendable.note.value().inner()).unwrap();
                         Some(spendable)
                     }
                 })
                 .collect::<Vec<_>>();
-            let sapling_value_selected = notes.iter().fold(Amount::zero(), |prev, sn| {
-                (prev + Amount::from_u64(sn.note.value).unwrap()).unwrap()
+            orchard_value_selected = o_notes.iter().fold(Amount::zero(), |prev, sn| {
+                (prev + Amount::from_u64(sn.note.value().inner()).unwrap()).unwrap()
             });
 
-            if sapling_value_selected + transparent_value_selected >= Some(target_amount) {
+            if orchard_value_selected + transparent_value_selected >= Some(target_amount) {
                 return (
-                    notes,
+                    o_notes,
+                    vec![],
                     utxos,
-                    (sapling_value_selected + transparent_value_selected).unwrap(),
+                    (orchard_value_selected + transparent_value_selected).unwrap(),
                 );
             }
         }
 
+        // Start collecting sapling funds at every allowed offset
+        if allow_sapling {
+            for anchor_offset in &self.config.anchor_offset {
+                let keys = self.keys.read().await;
+                let mut candidate_notes = self
+                    .txns
+                    .read()
+                    .await
+                    .current
+                    .iter()
+                    .flat_map(|(txid, tx)| tx.s_notes.iter().map(move |note| (*txid, note)))
+                    .filter(|(_, note)| note.note.value > 0)
+                    .filter_map(|(txid, note)| {
+                        // Filter out notes that are already spent
+                        if note.spent.is_some() || note.unconfirmed_spent.is_some() {
+                            None
+                        } else {
+                            // Get the spending key for the selected fvk, if we have it
+                            let extsk = keys.get_extsk_for_extfvk(&note.extfvk);
+                            SpendableSaplingNote::from(txid, note, *anchor_offset as usize, &extsk)
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                candidate_notes.sort_by(|a, b| b.note.value.cmp(&a.note.value));
+
+                // Select the minimum number of notes required to satisfy the target value
+                let s_notes = candidate_notes
+                    .into_iter()
+                    .scan(Amount::zero(), |running_total, spendable| {
+                        if *running_total >= (target_amount - transparent_value_selected).unwrap() {
+                            None
+                        } else {
+                            *running_total += Amount::from_u64(spendable.note.value).unwrap();
+                            Some(spendable)
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                sapling_value_selected = s_notes.iter().fold(Amount::zero(), |prev, sn| {
+                    (prev + Amount::from_u64(sn.note.value).unwrap()).unwrap()
+                });
+
+                if orchard_value_selected + sapling_value_selected + transparent_value_selected >= Some(target_amount) {
+                    return (
+                        o_notes,
+                        s_notes,
+                        utxos,
+                        (orchard_value_selected + sapling_value_selected + transparent_value_selected).unwrap(),
+                    );
+                }
+            }
+        }
+
         // If we can't select enough, then we need to return empty handed
-        (vec![], vec![], Amount::zero())
+        (
+            vec![],
+            vec![],
+            vec![],
+            (orchard_value_selected + sapling_value_selected + transparent_value_selected).unwrap(),
+        )
     }
 
     pub async fn send_to_address<F, Fut, PR: TxProver>(
@@ -1126,6 +1348,21 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightWallet<P> {
             })
             .collect::<Result<Vec<(address::RecipientAddress, Amount, Option<String>)>, String>>()?;
 
+        // Calculate how much we're sending to each type of address
+        let (t_out, s_out, o_out) = recepients
+            .iter()
+            .map(|(to, value, _)| match to {
+                address::RecipientAddress::Unified(_) => (0, 0, value.into()),
+                address::RecipientAddress::Shielded(_) => (0, value.into(), 0),
+                address::RecipientAddress::Transparent(_) => (value.into(), 0, 0),
+            })
+            .reduce(|(t, s, o), (t2, s2, o2)| (t + t2, s + s2, o + o2))
+            .unwrap_or((0, 0, 0));
+
+        if s_out > 0 && o_out > 0 {
+            return Err("Can't send to Sapling and Orchard in same tx".to_string());
+        }
+
         // Select notes to cover the target value
         println!("{}: Selecting notes", now() - start_time);
 
@@ -1136,15 +1373,18 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightWallet<P> {
         };
 
         let (progress_notifier, progress_notifier_rx) = mpsc::channel();
-        let mut builder = Builder::new(self.config.get_params().clone(), target_height);
+
+        let orchard_anchor = Anchor::from(self.orchard_witnesses.read().await.as_ref().unwrap().root(0).unwrap());
+
+        let mut builder = Builder::new_with_orchard(self.config.get_params().clone(), target_height, orchard_anchor);
         builder.with_progress_notifier(progress_notifier);
 
         // Create a map from address -> sk for all taddrs, so we can spend from the
         // right address
         let address_to_sk = self.keys.read().await.get_taddr_to_sk_map();
 
-        let (notes, utxos, selected_value) = self
-            .select_notes_and_utxos(target_amount.unwrap(), transparent_only, true)
+        let (o_notes, s_notes, utxos, selected_value) = self
+            .select_notes_and_utxos(target_amount.unwrap(), transparent_only, true, true, true)
             .await;
         if selected_value < target_amount.unwrap() {
             let e = format!(
@@ -1157,9 +1397,10 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightWallet<P> {
 
         // Create the transaction
         println!(
-            "{}: Adding {} notes and {} utxos",
+            "{}: Adding {} o_notes {} s_notes and {} utxos",
             now() - start_time,
-            notes.len(),
+            o_notes.len(),
+            s_notes.len(),
             utxos.len()
         );
 
@@ -1188,14 +1429,24 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightWallet<P> {
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| format!("{:?}", e))?;
 
-        for selected in notes.iter() {
+        // Add Orchard notes
+        for selected in o_notes.iter() {
+            if let Err(e) = builder.add_orchard_spend(selected.sk, selected.note, selected.merkle_path.clone()) {
+                let e = format!("Error adding orchard note: {:?}", e);
+                error!("{}", e);
+                return Err(e);
+            }
+        }
+
+        // Add Sapling notes
+        for selected in s_notes.iter() {
             if let Err(e) = builder.add_sapling_spend(
                 selected.extsk.clone(),
                 selected.diversifier,
                 selected.note.clone(),
                 selected.witness.path().unwrap(),
             ) {
-                let e = format!("Error adding note: {:?}", e);
+                let e = format!("Error adding sapling note: {:?}", e);
                 error!("{}", e);
                 return Err(e);
             }
@@ -1204,7 +1455,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightWallet<P> {
         // If no Sapling notes were added, add the change address manually. That is,
         // send the change to our sapling address manually. Note that if a sapling note was spent,
         // the builder will automatically send change to that address
-        if notes.len() == 0 {
+        if t_out > 0 && s_notes.len() == 0 {
             builder.send_change_to(
                 self.keys.read().await.zkeys[0].extfvk.fvk.ovk,
                 self.keys.read().await.zkeys[0].zaddress.clone(),
@@ -1212,8 +1463,13 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightWallet<P> {
         }
 
         // We'll use the first ovk to encrypt outgoing Txns
-        let ovk = self.keys.read().await.zkeys[0].extfvk.fvk.ovk;
+        let s_ovk = self.keys.read().await.zkeys[0].extfvk.fvk.ovk;
+        let o_ovk = self.keys.read().await.okeys[0]
+            .fvk()
+            .to_ovk(orchard::keys::Scope::External);
+
         let mut total_z_recepients = 0u32;
+        let mut total_o_recepients = 0u32;
         for (to, value, memo) in recepients {
             // Compute memo if it exists
             let encoded_memo = match memo {
@@ -1234,12 +1490,18 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightWallet<P> {
             println!("{}: Adding output", now() - start_time);
 
             if let Err(e) = match to {
+                address::RecipientAddress::Unified(to) => {
+                    // TODO(orchard): Allow using the sapling or transparent parts of this unified address too.
+                    let orchard_address = to.orchard().unwrap().clone();
+                    total_o_recepients += 1;
+
+                    builder.add_orchard_output(Some(o_ovk.clone()), orchard_address, value.into(), encoded_memo)
+                }
                 address::RecipientAddress::Shielded(to) => {
                     total_z_recepients += 1;
-                    builder.add_sapling_output(Some(ovk), to.clone(), value, encoded_memo)
+                    builder.add_sapling_output(Some(s_ovk), to.clone(), value, encoded_memo)
                 }
                 address::RecipientAddress::Transparent(to) => builder.add_transparent_output(&to, value),
-                address::RecipientAddress::Unified(_) => Err(transaction::builder::Error::NoChangeAddress),
             } {
                 let e = format!("Error adding output: {:?}", e);
                 error!("{}", e);
@@ -1268,10 +1530,11 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightWallet<P> {
         });
 
         {
+            // TODO(orchard): Orchard building progress
             let mut p = self.send_progress.write().await;
             p.is_send_in_progress = true;
             p.progress = 0;
-            p.total = notes.len() as u32 + total_z_recepients;
+            p.total = s_notes.len() as u32 + total_z_recepients + total_o_recepients;
         }
 
         println!("{}: Building transaction", now() - start_time);
@@ -1303,9 +1566,26 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightWallet<P> {
 
         // Mark notes as spent.
         {
-            // Mark sapling notes as unconfirmed spent
+            // Mark sapling and orchard notes as unconfirmed spent
             let mut txs = self.txns.write().await;
-            for selected in notes {
+            for selected in o_notes {
+                let mut spent_note = txs
+                    .current
+                    .get_mut(&selected.txid)
+                    .unwrap()
+                    .o_notes
+                    .iter_mut()
+                    .find(|nd| {
+                        nd.note.nullifier(&nd.fvk)
+                            == selected
+                                .note
+                                .nullifier(&orchard::keys::FullViewingKey::from(&selected.sk))
+                    })
+                    .unwrap();
+                spent_note.unconfirmed_spent = Some((tx.txid(), u32::from(target_height)));
+            }
+
+            for selected in s_notes {
                 let mut spent_note = txs
                     .current
                     .get_mut(&selected.txid)
@@ -1406,7 +1686,7 @@ mod test {
         let amt = Amount::from_u64(10_000).unwrap();
         // Reset the anchor offsets
         lc.wallet.config.anchor_offset = [9, 4, 2, 1, 0];
-        let (notes, utxos, selected) = lc.wallet.select_notes_and_utxos(amt, false, false).await;
+        let (_, notes, utxos, selected) = lc.wallet.select_notes_and_utxos(amt, false, false, true, false).await;
         assert!(selected >= amt);
         assert_eq!(notes.len(), 1);
         assert_eq!(notes[0].note.value, value);
@@ -1423,14 +1703,14 @@ mod test {
 
         // With min anchor_offset at 1, we can't select any notes
         lc.wallet.config.anchor_offset = [9, 4, 2, 1, 1];
-        let (notes, utxos, _selected) = lc.wallet.select_notes_and_utxos(amt, false, false).await;
+        let (_, notes, utxos, _selected) = lc.wallet.select_notes_and_utxos(amt, false, false, true, false).await;
         assert_eq!(notes.len(), 0);
         assert_eq!(utxos.len(), 0);
 
         // Mine 1 block, then it should be selectable
         mine_random_blocks(&mut fcbl, &data, &lc, 1).await;
 
-        let (notes, utxos, selected) = lc.wallet.select_notes_and_utxos(amt, false, false).await;
+        let (_, notes, utxos, selected) = lc.wallet.select_notes_and_utxos(amt, false, false, true, false).await;
         assert!(selected >= amt);
         assert_eq!(notes.len(), 1);
         assert_eq!(notes[0].note.value, value);
@@ -1448,7 +1728,7 @@ mod test {
         // Mine 15 blocks, then selecting the note should result in witness only 10 blocks deep
         mine_random_blocks(&mut fcbl, &data, &lc, 15).await;
         lc.wallet.config.anchor_offset = [9, 4, 2, 1, 1];
-        let (notes, utxos, selected) = lc.wallet.select_notes_and_utxos(amt, false, true).await;
+        let (_, notes, utxos, selected) = lc.wallet.select_notes_and_utxos(amt, false, true, true, false).await;
         assert!(selected >= amt);
         assert_eq!(notes.len(), 1);
         assert_eq!(notes[0].note.value, value);
@@ -1465,7 +1745,7 @@ mod test {
 
         // Trying to select a large amount will fail
         let amt = Amount::from_u64(1_000_000).unwrap();
-        let (notes, utxos, _selected) = lc.wallet.select_notes_and_utxos(amt, false, false).await;
+        let (_, notes, utxos, _selected) = lc.wallet.select_notes_and_utxos(amt, false, false, true, false).await;
         assert_eq!(notes.len(), 0);
         assert_eq!(utxos.len(), 0);
 
@@ -1482,14 +1762,14 @@ mod test {
 
         // Trying to select a large amount will now succeed
         let amt = Amount::from_u64(value + tvalue - 10_000).unwrap();
-        let (notes, utxos, selected) = lc.wallet.select_notes_and_utxos(amt, false, true).await;
+        let (_, notes, utxos, selected) = lc.wallet.select_notes_and_utxos(amt, false, true, true, false).await;
         assert_eq!(selected, Amount::from_u64(value + tvalue).unwrap());
         assert_eq!(notes.len(), 1);
         assert_eq!(utxos.len(), 1);
 
         // If we set transparent-only = true, only the utxo should be selected
         let amt = Amount::from_u64(tvalue - 10_000).unwrap();
-        let (notes, utxos, selected) = lc.wallet.select_notes_and_utxos(amt, true, true).await;
+        let (_, notes, utxos, selected) = lc.wallet.select_notes_and_utxos(amt, true, true, true, false).await;
         assert_eq!(selected, Amount::from_u64(tvalue).unwrap());
         assert_eq!(notes.len(), 0);
         assert_eq!(utxos.len(), 1);
@@ -1497,7 +1777,7 @@ mod test {
         // Set min confs to 5, so the sapling note will not be selected
         lc.wallet.config.anchor_offset = [9, 4, 4, 4, 4];
         let amt = Amount::from_u64(tvalue - 10_000).unwrap();
-        let (notes, utxos, selected) = lc.wallet.select_notes_and_utxos(amt, false, true).await;
+        let (_, notes, utxos, selected) = lc.wallet.select_notes_and_utxos(amt, false, true, true, false).await;
         assert_eq!(selected, Amount::from_u64(tvalue).unwrap());
         assert_eq!(notes.len(), 0);
         assert_eq!(utxos.len(), 1);
@@ -1532,7 +1812,7 @@ mod test {
         let amt = Amount::from_u64(10_000).unwrap();
         // Reset the anchor offsets
         lc.wallet.config.anchor_offset = [9, 4, 2, 1, 0];
-        let (notes, utxos, selected) = lc.wallet.select_notes_and_utxos(amt, false, false).await;
+        let (_, notes, utxos, selected) = lc.wallet.select_notes_and_utxos(amt, false, false, true, false).await;
         assert!(selected >= amt);
         assert_eq!(notes.len(), 1);
         assert_eq!(notes[0].note.value, value1);
@@ -1557,7 +1837,7 @@ mod test {
 
         // Now, try to select a small amount, it should prefer the older note
         let amt = Amount::from_u64(10_000).unwrap();
-        let (notes, utxos, selected) = lc.wallet.select_notes_and_utxos(amt, false, false).await;
+        let (_, notes, utxos, selected) = lc.wallet.select_notes_and_utxos(amt, false, false, true, false).await;
         assert!(selected >= amt);
         assert_eq!(notes.len(), 1);
         assert_eq!(notes[0].note.value, value1);
@@ -1565,7 +1845,7 @@ mod test {
 
         // Selecting a bigger amount should select both notes
         let amt = Amount::from_u64(value1 + value2).unwrap();
-        let (notes, utxos, selected) = lc.wallet.select_notes_and_utxos(amt, false, false).await;
+        let (_, notes, utxos, selected) = lc.wallet.select_notes_and_utxos(amt, false, false, true, false).await;
         assert!(selected == amt);
         assert_eq!(notes.len(), 2);
         assert_eq!(utxos.len(), 0);

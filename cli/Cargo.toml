@@ -1,6 +1,6 @@
 [package]
 name = "zecwallet-cli"
-version = "1.8.0-beta1"
+version = "1.8.0-beta2"
 edition = "2018"
 
 [dependencies]

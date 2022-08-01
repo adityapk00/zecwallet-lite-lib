@@ -10,6 +10,7 @@ use crate::{
 };
 use ff::{Field, PrimeField};
 use group::GroupEncoding;
+use orchard::tree::MerkleHashOrchard;
 use prost::Message;
 use rand::{rngs::OsRng, RngCore};
 use secp256k1::PublicKey;
@@ -48,6 +49,12 @@ pub fn random_u8_32() -> [u8; 32] {
 }
 
 pub fn tree_to_string(tree: &CommitmentTree<Node>) -> String {
+    let mut b1 = vec![];
+    tree.write(&mut b1).unwrap();
+    hex::encode(b1)
+}
+
+pub fn orchardtree_to_string(tree: &CommitmentTree<MerkleHashOrchard>) -> String {
     let mut b1 = vec![];
     tree.write(&mut b1).unwrap();
     hex::encode(b1)

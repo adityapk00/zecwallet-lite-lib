@@ -8,9 +8,18 @@ members = [
 debug = false
 
 [patch.crates-io]
-zcash_address = { git = "https://github.com/zcash/librustzcash", rev = "09567fc280463f5797a77f1d764205be8ad8e64a"}
-zcash_primitives = { git = "https://github.com/zcash/librustzcash", rev = "09567fc280463f5797a77f1d764205be8ad8e64a"}
-zcash_client_backend = { git = "https://github.com/zcash/librustzcash", rev = "09567fc280463f5797a77f1d764205be8ad8e64a"}
-zcash_note_encryption = { git = "https://github.com/zcash/librustzcash", rev = "09567fc280463f5797a77f1d764205be8ad8e64a"}
-zcash_encoding = { git = "https://github.com/zcash/librustzcash", rev = "09567fc280463f5797a77f1d764205be8ad8e64a"}
-zcash_proofs = { git = "https://github.com/zcash/librustzcash", rev = "09567fc280463f5797a77f1d764205be8ad8e64a"}
+zcash_address = { git = "https://github.com/adityapk00/librustzcash", rev = "adf49f8b848a5ac85e1476354614eeae9880206a"}
+zcash_primitives = { git = "https://github.com/adityapk00/librustzcash", rev = "adf49f8b848a5ac85e1476354614eeae9880206a"}
+zcash_client_backend = { git = "https://github.com/adityapk00/librustzcash", rev = "adf49f8b848a5ac85e1476354614eeae9880206a"}
+zcash_note_encryption = { git = "https://github.com/adityapk00/librustzcash", rev = "adf49f8b848a5ac85e1476354614eeae9880206a"}
+zcash_encoding = { git = "https://github.com/adityapk00/librustzcash", rev = "adf49f8b848a5ac85e1476354614eeae9880206a"}
+zcash_proofs = { git = "https://github.com/adityapk00/librustzcash", rev = "adf49f8b848a5ac85e1476354614eeae9880206a"}
+orchard = { git = "https://github.com/adityapk00/orchard", rev = "0a960a380f4e9c3472c9260f3df61cd5e50d51b0" }
+
+#zcash_address = { path = "../librustzcash/components/zcash_address/" }
+#zcash_primitives = { path = "../librustzcash/zcash_primitives/" }
+#zcash_client_backend = { path = "../librustzcash/zcash_client_backend" }
+#zcash_note_encryption = { path = "../librustzcash/components/zcash_note_encryption" }
+#zcash_encoding = { path = "../librustzcash/components/zcash_encoding/" }
+#zcash_proofs = { path = "../librustzcash/zcash_proofs/" }
+#orchard = { path = "../orchard/" }

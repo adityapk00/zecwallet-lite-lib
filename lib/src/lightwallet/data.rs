@@ -1,6 +1,9 @@
 use crate::compact_formats::CompactBlock;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use incrementalmerkletree::Position;
 use orchard::keys::FullViewingKey;
+use orchard::note::RandomSeed;
+use orchard::value::NoteValue;
 use orchard::Address;
 use prost::Message;
 use std::convert::TryFrom;
@@ -180,13 +183,13 @@ impl WitnessCache {
 pub struct OrchardNoteData {
     pub(super) fvk: FullViewingKey,
 
-    pub note_address: Address,
-    pub note_value: u64,
-    pub note_nullifier: orchard::note::Nullifier,
+    pub note: orchard::Note,
+
+    // (Block number, tx_num, output_num)
+    pub created_at: (u64, usize, u32),
+    pub witness_position: Option<Position>,
 
     // Info needed to recreate note
-    pub action_bytes: Vec<u8>,
-
     pub spent: Option<(TxId, u32)>, // If this note was confirmed spent
 
     // If this note was spent in a send, but has not yet been confirmed.
@@ -219,10 +222,17 @@ impl OrchardNoteData {
         let note_value = reader.read_u64::<LittleEndian>()?;
         let mut rho_bytes = [0u8; 32];
         reader.read_exact(&mut rho_bytes)?;
-        let note_nullifier = orchard::note::Nullifier::from_bytes(&rho_bytes).unwrap();
+        let note_rho = orchard::note::Nullifier::from_bytes(&rho_bytes).unwrap();
+        let mut note_rseed_bytes = [0u8; 32];
+        reader.read_exact(&mut note_rseed_bytes)?;
+        let note_rseed = RandomSeed::from_bytes(note_rseed_bytes, &note_rho).unwrap();
 
-        // Read the action bytes
-        let action_bytes = Vector::read(&mut reader, |r| r.read_u8())?;
+        let note = orchard::Note::from_parts(note_address, NoteValue::from_raw(note_value), note_rho, note_rseed);
+
+        let witness_position = Optional::read(&mut reader, |r| {
+            let pos = r.read_u64::<LittleEndian>()?;
+            Ok(Position::from(pos as usize))
+        })?;
 
         let spent = Optional::read(&mut reader, |r| {
             let mut txid_bytes = [0u8; 32];
@@ -262,10 +272,9 @@ impl OrchardNoteData {
 
         Ok(OrchardNoteData {
             fvk,
-            note_address,
-            note_value,
-            note_nullifier,
-            action_bytes,
+            note,
+            created_at: (0, 0, 0),
+            witness_position,
             spent,
             unconfirmed_spent,
             memo,
@@ -281,12 +290,15 @@ impl OrchardNoteData {
         self.fvk.write(&mut writer)?;
 
         // Write the components of the note
-        writer.write_all(&self.note_address.to_raw_address_bytes())?;
-        writer.write_u64::<LittleEndian>(self.note_value)?;
-        writer.write_all(&self.note_nullifier.to_bytes())?;
+        writer.write_all(&self.note.recipient().to_raw_address_bytes())?;
+        writer.write_u64::<LittleEndian>(self.note.value().inner())?;
+        writer.write_all(&self.note.rho().to_bytes())?;
+        writer.write_all(self.note.rseed().as_bytes())?;
 
-        // Write the action bytes
-        Vector::write(&mut writer, &self.action_bytes, |w, b| w.write_u8(*b))?;
+        // We don't write the created_at, because it should be temporary
+        Optional::write(&mut writer, self.witness_position, |w, p| {
+            w.write_u64::<LittleEndian>(p.into())
+        })?;
 
         Optional::write(&mut writer, self.spent, |w, (txid, h)| {
             w.write_all(txid.as_ref())?;
@@ -740,6 +752,9 @@ pub struct WalletTx {
     // List of all Utxos received in this Tx. Some of these might be change notes
     pub utxos: Vec<Utxo>,
 
+    // Total value of all orchard nullifiers that were spent in this Tx
+    pub total_orchard_value_spent: u64,
+
     // Total value of all the sapling nullifiers that were spent in this Tx
     pub total_sapling_value_spent: u64,
 
@@ -758,7 +773,7 @@ pub struct WalletTx {
 
 impl WalletTx {
     pub fn serialized_version() -> u64 {
-        return 22;
+        return 23;
     }
 
     pub fn new_txid(txid: &Vec<u8>) -> TxId {
@@ -795,6 +810,7 @@ impl WalletTx {
             utxos: vec![],
             total_transparent_value_spent: 0,
             total_sapling_value_spent: 0,
+            total_orchard_value_spent: 0,
             outgoing_metadata: vec![],
             full_tx_scanned: false,
             zec_price: None,
@@ -822,6 +838,11 @@ impl WalletTx {
         let s_notes = Vector::read(&mut reader, |r| SaplingNoteData::read(r))?;
         let utxos = Vector::read(&mut reader, |r| Utxo::read(r))?;
 
+        let total_orchard_value_spent = if version <= 22 {
+            0
+        } else {
+            reader.read_u64::<LittleEndian>()?
+        };
         let total_sapling_value_spent = reader.read_u64::<LittleEndian>()?;
         let total_transparent_value_spent = reader.read_u64::<LittleEndian>()?;
 
@@ -873,6 +894,7 @@ impl WalletTx {
             s_spent_nullifiers,
             o_spent_nullifiers,
             total_sapling_value_spent,
+            total_orchard_value_spent,
             total_transparent_value_spent,
             outgoing_metadata,
             full_tx_scanned,
@@ -895,6 +917,7 @@ impl WalletTx {
         Vector::write(&mut writer, &self.s_notes, |w, nd| nd.write(w))?;
         Vector::write(&mut writer, &self.utxos, |w, u| u.write(w))?;
 
+        writer.write_u64::<LittleEndian>(self.total_orchard_value_spent)?;
         writer.write_u64::<LittleEndian>(self.total_sapling_value_spent)?;
         writer.write_u64::<LittleEndian>(self.total_transparent_value_spent)?;
 
@@ -915,7 +938,14 @@ impl WalletTx {
     }
 }
 
-pub struct SpendableNote {
+pub struct SpendableOrchardNote {
+    pub txid: TxId,
+    pub sk: orchard::keys::SpendingKey,
+    pub note: orchard::Note,
+    pub merkle_path: orchard::tree::MerklePath,
+}
+
+pub struct SpendableSaplingNote {
     pub txid: TxId,
     pub nullifier: sapling::Nullifier,
     pub diversifier: Diversifier,
@@ -924,7 +954,7 @@ pub struct SpendableNote {
     pub extsk: ExtendedSpendingKey,
 }
 
-impl SpendableNote {
+impl SpendableSaplingNote {
     pub fn from(
         txid: TxId,
         nd: &SaplingNoteData,
@@ -939,7 +969,7 @@ impl SpendableNote {
         {
             let witness = nd.witnesses.get(nd.witnesses.len() - anchor_offset - 1);
 
-            witness.map(|w| SpendableNote {
+            witness.map(|w| SpendableSaplingNote {
                 txid,
                 nullifier: nd.nullifier,
                 diversifier: nd.diversifier,
