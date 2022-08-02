@@ -20,7 +20,7 @@ use zcash_primitives::{
     primitives::{Diversifier, Note, Nullifier, PaymentAddress, SaplingIvk},
     sapling::Node,
     transaction::{
-        components::{Amount, OutPoint, TxOut},
+        components::{amount::DEFAULT_FEE, Amount, OutPoint, TxOut},
         Transaction,
     },
     zip32::{ChildIndex, DiversifierIndex},
@@ -793,7 +793,7 @@ impl<'a, P: Parameters + Send + Sync> Builder for LedgerBuilder<'a, P> {
                 &mut self.keystore.app,
                 self.params,
                 prover,
-                0,
+                DEFAULT_FEE.into(),
                 &mut OsRng,
                 self.target_height.into(),
                 consensus_branch_id,
