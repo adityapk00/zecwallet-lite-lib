@@ -1187,7 +1187,7 @@ impl LightWallet {
 
         // Create a map from address -> sk for all taddrs, so we can spend from the
         // right address
-        let (address_to_key, first_zkey) = {
+        let (address_to_key, (first_zkey_ovk, first_zkey_addr)) = {
             let (map, first) = {
                 let guard = self.keys.read().await;
                 tokio::join!(guard.get_taddr_to_key_map(), guard.first_zkey())
@@ -1272,13 +1272,12 @@ impl LightWallet {
         // If no Sapling notes were added, add the change address manually. That is,
         // send the change to our sapling address manually. Note that if a sapling note was spent,
         // the builder will automatically send change to that address
-        if notes.len() == 0 && first_zkey.is_some() {
-            let (ovk, zaddr) = first_zkey.clone().unwrap();
-            builder.send_change_to(ovk, zaddr);
+        if notes.len() == 0 {
+            builder.send_change_to(first_zkey_ovk, first_zkey_addr);
         }
 
         // We'll use the first ovk to encrypt outgoing Txns
-        let ovk = first_zkey.map(|z| z.0);
+        let ovk = first_zkey_ovk;
         let mut total_z_recepients = 0u32;
         for (to, value, memo) in recepients {
             // Compute memo if it exists
@@ -1302,7 +1301,7 @@ impl LightWallet {
             if let Err(e) = match to {
                 address::RecipientAddress::Shielded(to) => {
                     total_z_recepients += 1;
-                    builder.add_sapling_output(ovk, to.clone(), value, Some(encoded_memo))
+                    builder.add_sapling_output(Some(ovk), to.clone(), value, Some(encoded_memo))
                 }
                 address::RecipientAddress::Transparent(to) => builder.add_transparent_output(&to, value),
             } {
