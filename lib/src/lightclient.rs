@@ -209,6 +209,20 @@ impl LightClient {
         };
     }
 
+    pub async fn clear_and_set_wallet_initial_state(&self, height: u64) {
+        let state = self.config.get_initial_state(height).await;
+
+        match state {
+            Some((height, hash, tree)) => {
+                info!("Setting initial state to height {}, tree {}", height, tree);
+                self.wallet
+                    .set_initial_block(height, &hash.as_str(), &tree.as_str())
+                    .await;
+            }
+            _ => {}
+        };
+    }
+
     fn new_wallet(config: &LightClientConfig, latest_block: u64, num_zaddrs: u32) -> io::Result<Self> {
         Runtime::new().unwrap().block_on(async move {
             let l = LightClient {
@@ -265,6 +279,11 @@ impl LightClient {
 
             info!("Created new wallet with a ledger!");
             info!("Created LightClient to {}", &config.server);
+
+            // Save
+            l.do_save()
+                .await
+                .map_err(|s| io::Error::new(ErrorKind::PermissionDenied, s))?;
 
             Ok(l)
         })
@@ -1067,12 +1086,15 @@ impl LightClient {
     }
 
     pub async fn clear_state(&self) {
-        // First, clear the state from the wallet
-        self.wallet.clear_all().await;
-
-        // Then set the initial block
+        //first, get wallet birthday
         let birthday = self.wallet.get_birthday().await;
-        self.set_wallet_initial_state(birthday).await;
+
+        // and retrieve initial state
+        if let Some((height, hash, tree)) = self.config.get_initial_state(birthday).await {
+            //then, reset wallet to that height
+            self.wallet.clear_all_and_set_initial_block(height, &hash, &tree).await;
+        }
+
         info!("Cleared wallet state, with birthday at {}", birthday);
     }
 

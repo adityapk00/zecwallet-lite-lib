@@ -318,8 +318,22 @@ impl LightWallet {
     /// After this, the wallet's initial state will need to be set
     /// and the wallet will need to be rescanned
     pub async fn clear_all(&self) {
-        self.blocks.write().await.clear();
-        self.txns.write().await.clear();
+        let mut blocks_guard = self.blocks.write().await;
+        let mut txns_guard = self.txns.write().await;
+
+        blocks_guard.clear();
+        txns_guard.clear();
+    }
+
+    /// Clears all the downloaded blocks and resets the state to the specified block.
+    pub async fn clear_all_and_set_initial_block(&self, height: u64, hash: &str, _tree: &str) {
+        let mut blocks_guard = self.blocks.write().await;
+        let mut txns_guard = self.txns.write().await;
+
+        blocks_guard.clear();
+        txns_guard.clear();
+
+        blocks_guard.push(BlockData::new_with(height, hash));
     }
 
     pub async fn set_initial_block(&self, height: u64, hash: &str, _sapling_tree: &str) -> bool {
