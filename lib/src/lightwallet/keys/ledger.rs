@@ -89,7 +89,7 @@ pub struct LedgerKeystore {
     transparent_addrs: RwLock<BTreeMap<[u32; 5], SecpPublicKey>>,
 
     //associated a path with an ivk and the default diversifier
-    shielded_addrs: RwLock<BTreeMap<[u32; 3], (SaplingIvk, Diversifier)>>,
+    shielded_addrs: RwLock<BTreeMap<[u32; 3], (SaplingIvk, Diversifier, OutgoingViewingKey)>>,
 }
 
 impl LedgerKeystore {
@@ -152,7 +152,7 @@ impl LedgerKeystore {
             .read()
             .await
             .get(path)
-            .and_then(|(ivk, d)| ivk.to_payment_address(*d))
+            .and_then(|(ivk, d, _)| ivk.to_payment_address(*d))
     }
 
     /// Retrieve the defualt diversifier from a given device and path
@@ -193,7 +193,7 @@ impl LedgerKeystore {
 
         guard
             .values()
-            .map(|(ivk, d)| (SaplingIvk(ivk.0.clone()), d.clone()))
+            .map(|(ivk, d, _)| (SaplingIvk(ivk.0.clone()), d.clone()))
             .collect::<Vec<_>>()
             .into_iter()
     }
@@ -202,17 +202,11 @@ impl LedgerKeystore {
     pub async fn get_all_ovks(&self) -> impl Iterator<Item = OutgoingViewingKey> {
         let guard = self.shielded_addrs.read().await;
 
-        let iter = guard.keys();
-        let mut ovks = Vec::with_capacity(iter.size_hint().0);
-        for path in iter {
-            match self.get_ovk_of(path).await {
-                Ok(ovk) => ovks.push(ovk),
-                //TODO: handle error? return after first error?
-                Err(_e) => continue,
-            }
-        }
-
-        ovks.into_iter()
+        guard
+            .values()
+            .map(|(_, _, ovk)| ovk.clone())
+            .collect::<Vec<_>>()
+            .into_iter()
     }
 
     /// Retrieve all the cached/known ZAddrs
@@ -276,7 +270,7 @@ impl LedgerKeystore {
             let guard = self.shielded_addrs.read().await;
             guard
                 .iter()
-                .find(move |(_, (k, _))| k.to_repr() == ivk_repr)
+                .find(move |(_, (k, _, _))| k.to_repr() == ivk_repr)
                 .map(|(p, _)| *p)
                 .ok_or(LedgerError::KeyNotFound)?
         };
@@ -293,10 +287,12 @@ impl LedgerKeystore {
 //in-memory keystore compatibility methods
 impl LedgerKeystore {
     /// Retrieve the OVK of a given path
-    pub async fn get_ovk_of(&self, path: &[u32; 3]) -> Result<OutgoingViewingKey, LedgerError> {
-        let ovk = self.app.get_ovk(path[2]).await?;
-
-        Ok(OutgoingViewingKey(ovk.0))
+    pub async fn get_ovk_of(&self, path: &[u32; 3]) -> Option<OutgoingViewingKey> {
+        self.shielded_addrs
+            .read()
+            .await
+            .get(path)
+            .map(|(_, _, ovk)| ovk.clone())
     }
 
     /// Given an address, verify that we have N addresses
@@ -359,7 +355,7 @@ impl LedgerKeystore {
             //get the last N addresses
             .take(GAP_RULE_UNUSED_ADDRESSES)
             //get the payment address of each
-            .map(move |(path, (ivk, d))| {
+            .map(move |(path, (ivk, d, _))| {
                 (
                     *path,
                     ivk.to_payment_address(*d)
@@ -598,7 +594,13 @@ impl LedgerKeystore {
 
             let div = Self::get_default_div_from(&app, idx).await?;
 
-            shielded_addrs.insert(path, (ivk, div));
+            let ovk = app
+                .get_ovk(idx)
+                .await
+                .map(|ovk| OutgoingViewingKey(ovk.0))
+                .map_err(LedgerError::Ledger)?;
+
+            shielded_addrs.insert(path, (ivk, div, ovk));
         }
 
         Ok(Self {
@@ -663,11 +665,13 @@ impl Keystore for LedgerKeystore {
 
                 let div = self.get_default_div(path[2]).await?;
 
+                let ovk = self.app.get_ovk(path[2]).await.map(|ovk| OutgoingViewingKey(ovk.0))?;
+
                 let addr = ivk
                     .to_payment_address(div)
                     .expect("guaranteed valid diversifier should get a payment address");
 
-                self.shielded_addrs.write().await.insert(path, (ivk, div));
+                self.shielded_addrs.write().await.insert(path, (ivk, div, ovk));
                 Ok(addr)
             }
         }
@@ -711,7 +715,7 @@ impl<'a, P: Parameters> LedgerBuilder<'a, P> {
             .shielded_addrs
             .get_mut()
             .iter()
-            .find(|(_, (k, _))| k.to_repr() == ivk)
+            .find(|(_, (k, _, _))| k.to_repr() == ivk)
             .map(|(p, _)| *p)
             .ok_or(LedgerError::KeyNotFound)
     }

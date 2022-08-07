@@ -254,7 +254,7 @@ impl Keystores {
             #[cfg(feature = "ledger-support")]
             Self::Ledger(this) => {
                 let path = this.first_shielded().await?;
-                let ovk = this.get_ovk_of(&path).await.ok()?;
+                let ovk = this.get_ovk_of(&path).await?;
                 let zaddr = this
                     .payment_address_from_path(&path)
                     .await
