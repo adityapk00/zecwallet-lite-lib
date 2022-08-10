@@ -198,8 +198,8 @@ impl<P: consensus::Parameters> LightClientConfig<P> {
 
                 match &self.chain_name[..] {
                     "zs" | "main" => {}
-                    "ztestsapling" => zcash_data_location.push("testnet3"),
-                    "zregtestsapling" => zcash_data_location.push("regtest"),
+                    "ztestsapling" | "test" => zcash_data_location.push("testnet3"),
+                    "zregtestsapling" | "regtest" => zcash_data_location.push("regtest"),
                     c => panic!("Unknown chain {}", c),
                 };
             }
