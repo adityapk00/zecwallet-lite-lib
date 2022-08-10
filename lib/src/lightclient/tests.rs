@@ -727,6 +727,7 @@ async fn t_incoming_t_outgoing() {
 
     // 3. Test the list
     let list = lc.do_list_transactions(false).await;
+    println!("{}", list.pretty(2));
     assert_eq!(list[0]["block_height"].as_u64().unwrap(), 11);
     assert_eq!(list[0]["txid"], tx.txid().to_string());
     assert_eq!(list[0]["address"], taddr);

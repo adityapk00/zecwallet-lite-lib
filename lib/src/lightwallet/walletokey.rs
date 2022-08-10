@@ -105,6 +105,10 @@ impl WalletOKey {
         self.sk.is_some() || self.enc_key.is_some() || self.hdkey_num.is_some()
     }
 
+    pub fn orchard_address(&self) -> orchard::Address {
+        self.fvk.address_at(0u64, Scope::External)
+    }
+
     pub fn fvk(&self) -> &'_ FullViewingKey {
         &self.fvk
     }

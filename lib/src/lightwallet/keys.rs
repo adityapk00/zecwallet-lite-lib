@@ -609,11 +609,11 @@ impl<P: consensus::Parameters> Keys<P> {
 
         // Find the highest pos we have
         let pos = self
-            .zkeys
+            .okeys
             .iter()
-            .filter(|zk| zk.hdkey_num.is_some())
-            .max_by(|zk1, zk2| zk1.hdkey_num.unwrap().cmp(&zk2.hdkey_num.unwrap()))
-            .map_or(0, |zk| zk.hdkey_num.unwrap() + 1);
+            .filter(|ok| ok.hdkey_num.is_some())
+            .max_by(|ok1, ok2| ok1.hdkey_num.unwrap().cmp(&ok2.hdkey_num.unwrap()))
+            .map_or(0, |ok| ok.hdkey_num.unwrap() + 1);
 
         let bip39_seed = bip39::Seed::new(&Mnemonic::from_entropy(&self.seed, Language::English).unwrap(), "");
 
