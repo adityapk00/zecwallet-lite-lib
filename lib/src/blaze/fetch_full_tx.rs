@@ -4,13 +4,14 @@ use crate::{
         data::OutgoingTxMetadata,
         keys::{Keys, ToBase58Check},
         wallet_txns::WalletTxns,
+        LightWallet,
     },
 };
 
 use futures::{stream::FuturesUnordered, StreamExt};
 use log::info;
 use orchard::note_encryption::OrchardDomain;
-use zcash_note_encryption::try_note_decryption;
+use zcash_note_encryption::{try_note_decryption, try_output_recovery_with_ovk};
 
 use std::{
     collections::HashSet,
@@ -283,6 +284,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> FetchFullTxns<P> {
         }
         // Collect all our z addresses, to check for change
         let z_addresses: HashSet<String> = HashSet::from_iter(keys.read().await.get_all_zaddresses().into_iter());
+        let u_addresses: HashSet<String> = HashSet::from_iter(keys.read().await.get_all_uaddresses().into_iter());
 
         // Collect all our OVKs, to scan for outputs
         let ovks: Vec<_> = keys
@@ -374,8 +376,10 @@ impl<P: consensus::Parameters + Send + Sync + 'static> FetchFullTxns<P> {
             }
         }
 
-        // Step 4b: Scan the orchard part of the bundle to see if there are any memos
+        // Step 4b: Scan the orchard part of the bundle to see if there are any memos. We'll also scan the orchard outputs
+        // with our OutgoingViewingKey, to see if we can decrypt outgoing metadata
         let o_ivks = keys.read().await.get_all_orchard_ivks();
+        let o_ovk = keys.read().await.okeys[0].fvk().to_ovk(orchard::keys::Scope::External);
         if let Some(o_bundle) = tx.orchard_bundle() {
             // let orchard_actions = o_bundle
             //     .actions()
@@ -385,10 +389,10 @@ impl<P: consensus::Parameters + Send + Sync + 'static> FetchFullTxns<P> {
 
             // let decrypts = try_note_decryption(o_ivks.as_ref(), orchard_actions.as_ref());
             for oa in o_bundle.actions() {
+                let domain = OrchardDomain::for_action(oa);
+
                 for (ivk_num, ivk) in o_ivks.iter().enumerate() {
-                    if let Some((note, _address, memo_bytes)) =
-                        try_note_decryption(&OrchardDomain::for_action(oa), ivk, oa)
-                    {
+                    if let Some((note, _address, memo_bytes)) = try_note_decryption(&domain, ivk, oa) {
                         if let Ok(memo) = Memo::from_bytes(&memo_bytes) {
                             wallet_txns.write().await.add_memo_to_o_note(
                                 &tx.txid(),
@@ -397,6 +401,29 @@ impl<P: consensus::Parameters + Send + Sync + 'static> FetchFullTxns<P> {
                                 memo,
                             );
                         }
+                    }
+                }
+
+                // Also attempt output recovery using ovk to see if this wan an outgoing tx.
+                if let Some((note, ua_address, memo_bytes)) =
+                    try_output_recovery_with_ovk(&domain, &o_ovk, oa, oa.cv_net(), &oa.encrypted_note().out_ciphertext)
+                {
+                    is_outgoing_tx = true;
+                    let address = LightWallet::<P>::orchard_ua_address(&config, &ua_address);
+                    let memo = Memo::from_bytes(&memo_bytes).unwrap_or(Memo::default());
+
+                    // If this is just our address with an empty memo, do nothing.
+                    if !(u_addresses.contains(&address) && memo == Memo::Empty) {
+                        println!(
+                            "Recovered output note of value {} memo {:?}",
+                            note.value().inner(),
+                            memo
+                        );
+                        outgoing_metadatas.push(OutgoingTxMetadata {
+                            address,
+                            value: note.value().inner(),
+                            memo,
+                        });
                     }
                 }
             }

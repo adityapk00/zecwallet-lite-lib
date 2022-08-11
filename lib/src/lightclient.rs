@@ -871,15 +871,20 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
             .flat_map(|(_k, v)| {
                 let mut txns: Vec<JsonValue> = vec![];
 
-                if v.total_sapling_value_spent + v.total_transparent_value_spent > 0 {
+                if v.total_funds_spent() > 0 {
                     // If money was spent, create a transaction. For this, we'll subtract
                     // all the change notes + Utxos
                     let total_change = v
-                        .s_notes
+                        .s_notes // Sapling
                         .iter()
                         .filter(|nd| nd.is_change)
                         .map(|nd| nd.note.value)
                         .sum::<u64>()
+                        + v.o_notes // Orchard
+                            .iter()
+                            .filter(|nd| nd.is_change)
+                            .map(|nd| nd.note.value().inner())
+                            .sum::<u64>()
                         + v.utxos.iter().map(|ut| ut.value).sum::<u64>();
 
                     // Collect outgoing metadata
@@ -909,9 +914,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
                         "datetime"     => v.datetime,
                         "txid"         => format!("{}", v.txid),
                         "zec_price"    => v.zec_price.map(|p| (p * 100.0).round() / 100.0),
-                        "amount"       => total_change as i64
-                                            - v.total_sapling_value_spent as i64
-                                            - v.total_transparent_value_spent as i64,
+                        "amount"       => total_change as i64 - v.total_funds_spent() as i64,
                         "outgoing_metadata" => outgoing_json,
                     });
                 }

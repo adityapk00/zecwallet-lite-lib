@@ -936,6 +936,10 @@ impl WalletTx {
 
         Ok(())
     }
+
+    pub fn total_funds_spent(&self) -> u64 {
+        self.total_orchard_value_spent + self.total_sapling_value_spent + self.total_transparent_value_spent
+    }
 }
 
 pub struct SpendableOrchardNote {

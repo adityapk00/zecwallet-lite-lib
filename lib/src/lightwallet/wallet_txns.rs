@@ -233,10 +233,7 @@ impl WalletTxns {
     }
 
     pub fn total_funds_spent_in(&self, txid: &TxId) -> u64 {
-        self.current
-            .get(&txid)
-            .map(|t| t.total_sapling_value_spent + t.total_transparent_value_spent)
-            .unwrap_or(0)
+        self.current.get(&txid).map(|t| t.total_funds_spent()).unwrap_or(0)
     }
 
     pub fn get_unspent_s_nullifiers(&self) -> Vec<(Nullifier, u64, TxId)> {
