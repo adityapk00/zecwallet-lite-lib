@@ -155,9 +155,8 @@ impl<P: consensus::Parameters> LightClientConfig<P> {
         self.params.clone()
     }
 
-    pub fn get_network(&self) -> &Network {
-        // TODO
-        return &Network::Main;
+    pub fn get_network(&self) -> Network {
+        self.params.address_network().unwrap_or(Network::Main).clone()
     }
 
     /// Build the Logging config

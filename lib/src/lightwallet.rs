@@ -415,6 +415,11 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightWallet<P> {
             lw.set_witness_block_heights().await;
         }
 
+        // Also make sure we have at least 1 unified address
+        if lw.keys().read().await.okeys.len() == 0 {
+            lw.keys().write().await.add_oaddr();
+        }
+
         Ok(lw)
     }
 
@@ -502,7 +507,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightWallet<P> {
     pub fn orchard_ua_address(config: &LightClientConfig<P>, address: &Address) -> String {
         let orchard_container = Receiver::Orchard(address.to_raw_address_bytes());
         let unified_address = UnifiedAddress::try_from_items(vec![orchard_container]).unwrap();
-        unified_address.encode(config.get_network())
+        unified_address.encode(&config.get_network())
     }
 
     pub async fn set_download_memo(&self, value: MemoDownloadOption) {
@@ -1485,6 +1490,11 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightWallet<P> {
             } else {
                 change += selected.note.value;
             }
+        }
+
+        // Make sure we have at least 1 orchard address
+        if self.keys.read().await.okeys.len() == 0 {
+            self.keys().write().await.add_oaddr();
         }
 
         // We'll use the first ovk to encrypt outgoing Txns

@@ -463,7 +463,7 @@ impl<P: consensus::Parameters> Keys<P> {
     pub fn get_all_uaddresses(&self) -> Vec<String> {
         self.okeys
             .iter()
-            .map(|ok| ok.unified_address.encode(self.config.get_network()))
+            .map(|ok| ok.unified_address.encode(&self.config.get_network()))
             .collect()
     }
 
@@ -478,7 +478,7 @@ impl<P: consensus::Parameters> Keys<P> {
         self.okeys
             .iter()
             .filter(|ok| ok.have_spending_key())
-            .map(|ok| ok.unified_address.encode(self.config.get_network()))
+            .map(|ok| ok.unified_address.encode(&self.config.get_network()))
             .collect()
     }
 

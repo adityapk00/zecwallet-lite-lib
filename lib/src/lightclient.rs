@@ -1381,6 +1381,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
                     last_scanned_height,
                     self.wallet.blocks.clone(),
                     self.wallet.txns.clone(),
+                    self.wallet.orchard_witnesses.clone(),
                 )
                 .await;
             }

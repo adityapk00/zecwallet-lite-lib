@@ -276,6 +276,7 @@ impl BlockAndWitnessData {
         reorg_height: u64,
         existing_blocks: Arc<RwLock<Vec<BlockData>>>,
         wallet_txns: Arc<RwLock<WalletTxns>>,
+        orchard_witnesses: Arc<RwLock<Option<BridgeTree<MerkleHashOrchard, MERKLE_DEPTH>>>>,
     ) {
         // First, pop the first block (which is the top block) in the existing_blocks.
         let top_wallet_block = existing_blocks.write().await.drain(0..1).next().unwrap();
@@ -285,6 +286,9 @@ impl BlockAndWitnessData {
 
         // Remove all wallet txns at the height
         wallet_txns.write().await.remove_txns_at_height(reorg_height);
+
+        // Rollback one checkpoint for orchard, which corresponds to one block
+        orchard_witnesses.write().await.as_mut().map(|bt| bt.rewind());
     }
 
     /// Start a new sync where we ingest all the blocks
@@ -306,6 +310,7 @@ impl BlockAndWitnessData {
 
         let sync_status = self.sync_status.clone();
         sync_status.write().await.blocks_total = start_block - end_block + 1;
+        let orchard_witnesses = self.orchard_witnesses.clone();
 
         // Handle 0:
         // Process the incoming compact blocks, collect them into `BlockData` and pass them on
@@ -322,6 +327,8 @@ impl BlockAndWitnessData {
             let mut last_block_expecting = end_block;
 
             while let Some(cb) = rx.recv().await {
+                let orchard_witnesses = orchard_witnesses.clone();
+
                 //println!("block_witness recieved {:?}", cb.height);
                 // We'll process batch_size (1_000) blocks at a time.
                 // println!("Recieved block # {}", cb.height);
@@ -354,7 +361,13 @@ impl BlockAndWitnessData {
 
                     // If there was a reorg, then we need to invalidate the block and its associated txns
                     if let Some(reorg_height) = reorg_block {
-                        Self::invalidate_block(reorg_height, existing_blocks.clone(), wallet_txns.clone()).await;
+                        Self::invalidate_block(
+                            reorg_height,
+                            existing_blocks.clone(),
+                            wallet_txns.clone(),
+                            orchard_witnesses,
+                        )
+                        .await;
                         last_block_expecting = reorg_height;
                     }
                     reorg_tx.send(reorg_block).unwrap();

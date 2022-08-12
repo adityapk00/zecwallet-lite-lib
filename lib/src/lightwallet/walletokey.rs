@@ -49,57 +49,57 @@ impl WalletOKey {
         }
     }
 
-    pub fn new_locked_hdkey(hdkey_num: u32, fvk: FullViewingKey) -> Self {
-        let address = fvk.address_at(0u64, Scope::External);
-        let orchard_container = Receiver::Orchard(address.to_raw_address_bytes());
-        let unified_address = UnifiedAddress::try_from_items(vec![orchard_container]).unwrap();
+    // pub fn new_locked_hdkey(hdkey_num: u32, fvk: FullViewingKey) -> Self {
+    //     let address = fvk.address_at(0u64, Scope::External);
+    //     let orchard_container = Receiver::Orchard(address.to_raw_address_bytes());
+    //     let unified_address = UnifiedAddress::try_from_items(vec![orchard_container]).unwrap();
 
-        WalletOKey {
-            keytype: WalletOKeyType::HdKey,
-            sk: None,
-            fvk,
-            locked: true,
-            unified_address,
-            hdkey_num: Some(hdkey_num),
-            enc_key: None,
-            nonce: None,
-        }
-    }
+    //     WalletOKey {
+    //         keytype: WalletOKeyType::HdKey,
+    //         sk: None,
+    //         fvk,
+    //         locked: true,
+    //         unified_address,
+    //         hdkey_num: Some(hdkey_num),
+    //         enc_key: None,
+    //         nonce: None,
+    //     }
+    // }
 
-    pub fn new_imported_sk(sk: SpendingKey) -> Self {
-        let fvk = FullViewingKey::from(&sk);
-        let address = fvk.address_at(0u64, Scope::External);
-        let orchard_container = Receiver::Orchard(address.to_raw_address_bytes());
-        let unified_address = UnifiedAddress::try_from_items(vec![orchard_container]).unwrap();
+    // pub fn new_imported_sk(sk: SpendingKey) -> Self {
+    //     let fvk = FullViewingKey::from(&sk);
+    //     let address = fvk.address_at(0u64, Scope::External);
+    //     let orchard_container = Receiver::Orchard(address.to_raw_address_bytes());
+    //     let unified_address = UnifiedAddress::try_from_items(vec![orchard_container]).unwrap();
 
-        Self {
-            keytype: WalletOKeyType::ImportedSpendingKey,
-            sk: Some(sk),
-            fvk,
-            locked: false,
-            unified_address,
-            hdkey_num: None,
-            enc_key: None,
-            nonce: None,
-        }
-    }
+    //     Self {
+    //         keytype: WalletOKeyType::ImportedSpendingKey,
+    //         sk: Some(sk),
+    //         fvk,
+    //         locked: false,
+    //         unified_address,
+    //         hdkey_num: None,
+    //         enc_key: None,
+    //         nonce: None,
+    //     }
+    // }
 
-    pub fn new_imported_fullviewkey(fvk: FullViewingKey) -> Self {
-        let address = fvk.address_at(0u64, Scope::External);
-        let orchard_container = Receiver::Orchard(address.to_raw_address_bytes());
-        let unified_address = UnifiedAddress::try_from_items(vec![orchard_container]).unwrap();
+    // pub fn new_imported_fullviewkey(fvk: FullViewingKey) -> Self {
+    //     let address = fvk.address_at(0u64, Scope::External);
+    //     let orchard_container = Receiver::Orchard(address.to_raw_address_bytes());
+    //     let unified_address = UnifiedAddress::try_from_items(vec![orchard_container]).unwrap();
 
-        WalletOKey {
-            keytype: WalletOKeyType::ImportedFullViewKey,
-            sk: None,
-            fvk,
-            locked: false,
-            unified_address,
-            hdkey_num: None,
-            enc_key: None,
-            nonce: None,
-        }
-    }
+    //     WalletOKey {
+    //         keytype: WalletOKeyType::ImportedFullViewKey,
+    //         sk: None,
+    //         fvk,
+    //         locked: false,
+    //         unified_address,
+    //         hdkey_num: None,
+    //         enc_key: None,
+    //         nonce: None,
+    //     }
+    // }
 
     pub fn have_spending_key(&self) -> bool {
         self.sk.is_some() || self.enc_key.is_some() || self.hdkey_num.is_some()
