@@ -1,5 +1,4 @@
 use crate::compact_formats::vec_to_array;
-use crate::lightwallet::MAX_CHECKPOINTS;
 use crate::{
     compact_formats::{CompactBlock, CompactTx, TreeState},
     grpc_connector::GrpcConnector,
@@ -427,12 +426,6 @@ impl BlockAndWitnessData {
 
             let mut orchard_note_positions = self.orchard_note_positions.write().await;
 
-            // The last 100 blocks need to be checkpointed
-            let mut last_hundred = (blocks[0].height as i64) - (MAX_CHECKPOINTS as i64);
-            if last_hundred < 0 {
-                last_hundred = 0;
-            }
-
             // List of all the wallet's nullifiers
             let o_nullifiers = wallet_txns.read().await.get_unspent_o_nullifiers();
 
@@ -504,9 +497,7 @@ impl BlockAndWitnessData {
                 }
 
                 // See if we need to checkpoint
-                if cb.height >= last_hundred as u64 {
-                    orchard_witnesses.checkpoint();
-                }
+                orchard_witnesses.checkpoint();
             }
 
             orchard_witnesses.garbage_collect();

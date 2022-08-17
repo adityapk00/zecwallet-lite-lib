@@ -333,7 +333,7 @@ pub mod tests {
             chain_name: "zs".to_string(),
             monitor_mempool: false,
             sapling_activation_height: 0,
-            anchor_offset: [0u32; 5],
+            anchor_offset: 0,
             data_dir: None,
             params: UnitTestNetwork,
         }

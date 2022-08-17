@@ -770,10 +770,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightWallet<P> {
 
                 // Select an anchor ANCHOR_OFFSET back from the target block,
                 // unless that would be before the earliest block we have.
-                let anchor_height = cmp::max(
-                    target_height.saturating_sub(*self.config.anchor_offset.last().unwrap()),
-                    min_height,
-                );
+                let anchor_height = cmp::max(target_height.saturating_sub(self.config.anchor_offset), min_height);
 
                 Some((target_height, (target_height - anchor_height) as usize))
             }
@@ -1130,24 +1127,26 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightWallet<P> {
                     if maybe_sk.is_none() || note.witness_position.is_none() {
                         None
                     } else {
-                        let merkle_path = MerklePath::from_parts(
-                            usize::from(note.witness_position.unwrap()) as u32,
-                            orchard_witness_tree
-                                .authentication_path(
-                                    note.witness_position.unwrap(),
-                                    &orchard_witness_tree.root(0).unwrap(),
-                                )
-                                .unwrap()
-                                .try_into()
-                                .unwrap(),
+                        let auth_path = orchard_witness_tree.authentication_path(
+                            note.witness_position.unwrap(),
+                            &orchard_witness_tree.root(self.config.anchor_offset as usize).unwrap(),
                         );
 
-                        Some(SpendableOrchardNote {
-                            txid,
-                            sk: maybe_sk.unwrap(),
-                            note: note.note.clone(),
-                            merkle_path,
-                        })
+                        if auth_path.is_none() {
+                            None
+                        } else {
+                            let merkle_path = MerklePath::from_parts(
+                                usize::from(note.witness_position.unwrap()) as u32,
+                                auth_path.unwrap().try_into().unwrap(),
+                            );
+
+                            Some(SpendableOrchardNote {
+                                txid,
+                                sk: maybe_sk.unwrap(),
+                                note: note.note.clone(),
+                                merkle_path,
+                            })
+                        }
                     }
                 }
             })
@@ -1171,52 +1170,47 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightWallet<P> {
     }
 
     async fn select_sapling_notes(&self, target_amount: Amount) -> Vec<SpendableSaplingNote> {
-        let mut s_notes = vec![];
+        let keys = self.keys.read().await;
+        let mut candidate_notes = self
+            .txns
+            .read()
+            .await
+            .current
+            .iter()
+            .flat_map(|(txid, tx)| tx.s_notes.iter().map(move |note| (*txid, note)))
+            .filter(|(_, note)| note.note.value > 0)
+            .filter_map(|(txid, note)| {
+                // Filter out notes that are already spent
+                if note.spent.is_some() || note.unconfirmed_spent.is_some() {
+                    None
+                } else {
+                    // Get the spending key for the selected fvk, if we have it
+                    let extsk = keys.get_extsk_for_extfvk(&note.extfvk);
+                    SpendableSaplingNote::from(txid, note, self.config.anchor_offset as usize, &extsk)
+                }
+            })
+            .collect::<Vec<_>>();
+        candidate_notes.sort_by(|a, b| b.note.value.cmp(&a.note.value));
 
-        for anchor_offset in &self.config.anchor_offset {
-            s_notes.clear();
-            let keys = self.keys.read().await;
-            let mut candidate_notes = self
-                .txns
-                .read()
-                .await
-                .current
-                .iter()
-                .flat_map(|(txid, tx)| tx.s_notes.iter().map(move |note| (*txid, note)))
-                .filter(|(_, note)| note.note.value > 0)
-                .filter_map(|(txid, note)| {
-                    // Filter out notes that are already spent
-                    if note.spent.is_some() || note.unconfirmed_spent.is_some() {
-                        None
-                    } else {
-                        // Get the spending key for the selected fvk, if we have it
-                        let extsk = keys.get_extsk_for_extfvk(&note.extfvk);
-                        SpendableSaplingNote::from(txid, note, *anchor_offset as usize, &extsk)
-                    }
-                })
-                .collect::<Vec<_>>();
-            candidate_notes.sort_by(|a, b| b.note.value.cmp(&a.note.value));
+        // Select the minimum number of notes required to satisfy the target value
+        let s_notes = candidate_notes
+            .into_iter()
+            .scan(Amount::zero(), |running_total, spendable| {
+                if *running_total >= target_amount {
+                    None
+                } else {
+                    *running_total += Amount::from_u64(spendable.note.value).unwrap();
+                    Some(spendable)
+                }
+            })
+            .collect::<Vec<_>>();
 
-            // Select the minimum number of notes required to satisfy the target value
-            let s_notes = candidate_notes
-                .into_iter()
-                .scan(Amount::zero(), |running_total, spendable| {
-                    if *running_total >= target_amount {
-                        None
-                    } else {
-                        *running_total += Amount::from_u64(spendable.note.value).unwrap();
-                        Some(spendable)
-                    }
-                })
-                .collect::<Vec<_>>();
+        let sapling_value_selected = s_notes.iter().fold(Amount::zero(), |prev, sn| {
+            (prev + Amount::from_u64(sn.note.value).unwrap()).unwrap()
+        });
 
-            let sapling_value_selected = s_notes.iter().fold(Amount::zero(), |prev, sn| {
-                (prev + Amount::from_u64(sn.note.value).unwrap()).unwrap()
-            });
-
-            if sapling_value_selected >= target_amount {
-                return s_notes;
-            }
+        if sapling_value_selected >= target_amount {
+            return s_notes;
         }
 
         // If we couldn't select enough, return whatever we selected
@@ -1402,7 +1396,15 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightWallet<P> {
 
         let (progress_notifier, progress_notifier_rx) = mpsc::channel();
 
-        let orchard_anchor = Anchor::from(self.orchard_witnesses.read().await.as_ref().unwrap().root(0).unwrap());
+        let orchard_anchor = Anchor::from(
+            self.orchard_witnesses
+                .read()
+                .await
+                .as_ref()
+                .unwrap()
+                .root(self.config.anchor_offset as usize)
+                .unwrap(),
+        );
 
         let mut builder = Builder::new_with_orchard(self.config.get_params().clone(), target_height, orchard_anchor);
         builder.with_progress_notifier(progress_notifier);
@@ -1420,7 +1422,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightWallet<P> {
         if selected_value < target_amount {
             let e = format!(
                 "Insufficient verified funds. Have {} zats, need {} zats. NOTE: funds need at least {} confirmations before they can be spent.",
-                u64::from(selected_value), u64::from(target_amount), self.config.anchor_offset.last().unwrap() + 1
+                u64::from(selected_value), u64::from(target_amount), self.config.anchor_offset + 1
             );
             error!("{}", e);
             return Err(e);
@@ -1751,7 +1753,7 @@ mod test {
         // 3. With one confirmation, we should be able to select the note
         let amt = Amount::from_u64(10_000).unwrap();
         // Reset the anchor offsets
-        lc.wallet.config.anchor_offset = [9, 4, 2, 1, 0];
+        lc.wallet.config.anchor_offset = 0;
         let (_, notes, utxos, selected) = lc.wallet.select_notes_and_utxos(amt, false, false).await;
         assert!(selected >= amt);
         assert_eq!(notes.len(), 1);
@@ -1768,7 +1770,7 @@ mod test {
         );
 
         // With min anchor_offset at 1, we can't select any notes
-        lc.wallet.config.anchor_offset = [9, 4, 2, 1, 1];
+        lc.wallet.config.anchor_offset = 1;
         let (_, notes, utxos, _selected) = lc.wallet.select_notes_and_utxos(amt, false, false).await;
         assert_eq!(notes.len(), 0);
         assert_eq!(utxos.len(), 0);
@@ -1793,7 +1795,7 @@ mod test {
 
         // Mine 15 blocks, then selecting the note should result in witness only 10 blocks deep
         mine_random_blocks(&mut fcbl, &data, &lc, 15).await;
-        lc.wallet.config.anchor_offset = [9, 4, 2, 1, 1];
+        lc.wallet.config.anchor_offset = 9;
         let (_, notes, utxos, selected) = lc.wallet.select_notes_and_utxos(amt, false, true).await;
         assert!(selected >= amt);
         assert_eq!(notes.len(), 1);
@@ -1811,9 +1813,8 @@ mod test {
 
         // Trying to select a large amount will fail
         let amt = Amount::from_u64(1_000_000).unwrap();
-        let (_, notes, utxos, _selected) = lc.wallet.select_notes_and_utxos(amt, false, false).await;
-        assert_eq!(notes.len(), 0);
-        assert_eq!(utxos.len(), 0);
+        let (_, _, _, selected) = lc.wallet.select_notes_and_utxos(amt, false, false).await;
+        assert!(selected < amt);
 
         // 4. Get an incoming tx to a t address
         let sk = lc.wallet.keys().read().await.tkeys[0].clone();
@@ -1841,7 +1842,7 @@ mod test {
         assert_eq!(utxos.len(), 1);
 
         // Set min confs to 5, so the sapling note will not be selected
-        lc.wallet.config.anchor_offset = [9, 4, 4, 4, 4];
+        lc.wallet.config.anchor_offset = 4;
         let amt = Amount::from_u64(tvalue - 10_000).unwrap();
         let (_, notes, utxos, selected) = lc.wallet.select_notes_and_utxos(amt, false, true).await;
         assert_eq!(selected, Amount::from_u64(tvalue).unwrap());
@@ -1877,7 +1878,7 @@ mod test {
         // 3. With one confirmation, we should be able to select the note
         let amt = Amount::from_u64(10_000).unwrap();
         // Reset the anchor offsets
-        lc.wallet.config.anchor_offset = [9, 4, 2, 1, 0];
+        lc.wallet.config.anchor_offset = 0;
         let (_, notes, utxos, selected) = lc.wallet.select_notes_and_utxos(amt, false, false).await;
         assert!(selected >= amt);
         assert_eq!(notes.len(), 1);
@@ -1901,12 +1902,11 @@ mod test {
         let (_tx, _height, _) = fcbl.add_tx_paying(&extfvk1, value2);
         mine_pending_blocks(&mut fcbl, &data, &lc).await;
 
-        // Now, try to select a small amount, it should prefer the older note
         let amt = Amount::from_u64(10_000).unwrap();
         let (_, notes, utxos, selected) = lc.wallet.select_notes_and_utxos(amt, false, false).await;
         assert!(selected >= amt);
         assert_eq!(notes.len(), 1);
-        assert_eq!(notes[0].note.value, value1);
+        assert_eq!(notes[0].note.value, value2);
         assert_eq!(utxos.len(), 0);
 
         // Selecting a bigger amount should select both notes
