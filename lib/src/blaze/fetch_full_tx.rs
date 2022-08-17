@@ -412,13 +412,15 @@ impl<P: consensus::Parameters + Send + Sync + 'static> FetchFullTxns<P> {
                     let address = LightWallet::<P>::orchard_ua_address(&config, &ua_address);
                     let memo = Memo::from_bytes(&memo_bytes).unwrap_or(Memo::default());
 
+                    info!(
+                        "Recovered output note of value {} memo {:?} sent to {}",
+                        note.value().inner(),
+                        memo,
+                        address
+                    );
+
                     // If this is just our address with an empty memo, do nothing.
                     if !(u_addresses.contains(&address) && memo == Memo::Empty) {
-                        println!(
-                            "Recovered output note of value {} memo {:?}",
-                            note.value().inner(),
-                            memo
-                        );
                         outgoing_metadatas.push(OutgoingTxMetadata {
                             address,
                             value: note.value().inner(),

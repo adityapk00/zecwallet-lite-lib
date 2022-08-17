@@ -169,7 +169,6 @@ impl UpdateNotes {
                                 txid,
                             );
 
-                            // TODO: We probably don't need this, since it is being fetched again outside this `if`
                             // Send the future Tx to be fetched too, in case it has only spent nullifiers and not recieved any change
                             if download_memos != MemoDownloadOption::NoMemos {
                                 fetch_full_sender.send((spent_txid, spent_at_height)).unwrap();

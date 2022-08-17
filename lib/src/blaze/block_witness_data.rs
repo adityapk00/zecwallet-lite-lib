@@ -412,7 +412,11 @@ impl BlockAndWitnessData {
         output_nums.push(output_num);
     }
 
-    pub async fn update_orchard_spends_and_witnesses(&self, wallet_txns: Arc<RwLock<WalletTxns>>) {
+    pub async fn update_orchard_spends_and_witnesses(
+        &self,
+        wallet_txns: Arc<RwLock<WalletTxns>>,
+        scan_full_txn_tx: UnboundedSender<(TxId, BlockHeight)>,
+    ) {
         // Go over all the blocks
         if let Some(orchard_witnesses) = self.orchard_witnesses.write().await.as_mut() {
             // Read Lock
@@ -491,6 +495,9 @@ impl BlockAndWitnessData {
                                 if let Some(position) = maybe_position {
                                     orchard_witnesses.remove_witness(position);
                                 }
+
+                                // 4. Send the tx to be scanned for outgoing memos
+                                scan_full_txn_tx.send((txid, cb.height())).unwrap();
                             }
                         }
                     }

@@ -1542,8 +1542,9 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
 
         // The processor to process Transactions detected by the trial decryptions processor
         let update_notes_processor = UpdateNotes::new(self.wallet.txns());
-        let (update_notes_handle, blocks_done_tx, detected_txns_tx) =
-            update_notes_processor.start(bsync_data.clone(), scan_full_txn_tx).await;
+        let (update_notes_handle, blocks_done_tx, detected_txns_tx) = update_notes_processor
+            .start(bsync_data.clone(), scan_full_txn_tx.clone())
+            .await;
 
         // Do Trial decryptions of all the sapling outputs, and pass on the successful ones to the update_notes processor
         let trial_decryptions_processor = TrialDecryptions::new(self.wallet.keys(), self.wallet.txns());
@@ -1588,18 +1589,15 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
         let verify_handle = tokio::spawn(async move { block_data.read().await.block_data.verify_sapling_tree().await });
 
         // Collect all the handles in a Unordered Future, so if any of them fails, we immediately know.
-        let mut tasks = FuturesUnordered::new();
-        tasks.push(trial_decrypts_handle);
-        tasks.push(fulltx_fetcher_handle);
-        tasks.push(fetch_compact_blocks_handle);
-        tasks.push(taddr_fetcher_handle);
-
-        tasks.push(update_notes_handle);
-        tasks.push(taddr_txns_handle);
-        tasks.push(fetch_full_txns_handle);
+        let mut tasks1 = FuturesUnordered::new();
+        tasks1.push(trial_decrypts_handle);
+        tasks1.push(fetch_compact_blocks_handle);
+        tasks1.push(taddr_fetcher_handle);
+        tasks1.push(update_notes_handle);
+        tasks1.push(taddr_txns_handle);
 
         // Wait for everything to finish
-        while let Some(r) = tasks.next().await {
+        while let Some(r) = tasks1.next().await {
             match r {
                 Ok(Ok(_)) => (),
                 Ok(Err(s)) => return Err(s),
@@ -1616,13 +1614,26 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
         info!("Sync finished, doing post-processing");
 
         // Post sync, we have to do a bunch of stuff
+        let mut tasks2 = FuturesUnordered::new();
+
         // 1. Update the Orchard witnesses. This calculates the positions of all the notes found in this batch.
         bsync_data
             .read()
             .await
             .block_data
-            .update_orchard_spends_and_witnesses(self.wallet.txns.clone())
+            .update_orchard_spends_and_witnesses(self.wallet.txns.clone(), scan_full_txn_tx)
             .await;
+
+        tasks2.push(fulltx_fetcher_handle);
+        tasks2.push(fetch_full_txns_handle);
+        // Wait for everything to finish
+        while let Some(r) = tasks2.next().await {
+            match r {
+                Ok(Ok(_)) => (),
+                Ok(Err(s)) => return Err(s),
+                Err(e) => return Err(e.to_string()),
+            };
+        }
 
         // 2. Get the last 100 blocks and store it into the wallet, needed for future re-orgs
         let blocks = bsync_data.read().await.block_data.finish_get_blocks(MAX_REORG).await;
