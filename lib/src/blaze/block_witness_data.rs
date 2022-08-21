@@ -287,7 +287,16 @@ impl BlockAndWitnessData {
         wallet_txns.write().await.remove_txns_at_height(reorg_height);
 
         // Rollback one checkpoint for orchard, which corresponds to one block
-        orchard_witnesses.write().await.as_mut().map(|bt| bt.rewind());
+        let erase_tree = orchard_witnesses
+            .write()
+            .await
+            .as_mut()
+            .map(|bt| !bt.rewind())
+            .unwrap_or(false);
+        if erase_tree {
+            info!("Erased orchard tree");
+            orchard_witnesses.write().await.take();
+        }
     }
 
     /// Start a new sync where we ingest all the blocks
@@ -432,6 +441,9 @@ impl BlockAndWitnessData {
             for i in (0..blocks.len()).rev() {
                 let cb = &blocks.get(i as usize).unwrap().cb();
 
+                // Checkpoint the orchard witness tree at the start of each block
+                orchard_witnesses.checkpoint();
+
                 for (tx_num, ctx) in cb.vtx.iter().enumerate() {
                     for (output_num, action) in ctx.actions.iter().enumerate() {
                         let output_num = output_num as u32;
@@ -495,9 +507,6 @@ impl BlockAndWitnessData {
                         }
                     }
                 }
-
-                // See if we need to checkpoint
-                orchard_witnesses.checkpoint();
             }
 
             orchard_witnesses.garbage_collect();

@@ -1463,31 +1463,25 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
 
             if orchard_witnesses.is_none() {
                 let tree_state = GrpcConnector::get_merkle_tree(uri.clone(), last_scanned_height).await?;
-                println!(
+                info!(
                     "Attempting to get orchard tree from block {} with str `{}`",
                     last_scanned_height, tree_state.orchard_tree
                 );
 
                 // Populate the orchard witnesses from the previous block's frontier
                 let orchard_tree = hex::decode(tree_state.orchard_tree).unwrap();
-                // let o: io::Result<NonEmptyFrontier<MerkleHashOrchard>> =
-                //     LightWallet::<P>::read_nonempty_frontier_v1(&orchard_tree[..]);
-                // if let Ok(frontier) = o {
-                //     let witnesses = BridgeTree::<_, MERKLE_DEPTH>::from_frontier(100, frontier);
-                //     *orchard_witnesses = Some(witnesses);
-                // }
                 let witnesses = if orchard_tree.len() > 0 {
                     let tree =
                         CommitmentTree::<MerkleHashOrchard>::read(&orchard_tree[..]).map_err(|e| format!("{}", e))?;
                     if let Some(frontier) = tree.to_frontier::<MERKLE_DEPTH>().value() {
-                        println!("Creating orchard tree from frontier");
+                        info!("Creating orchard tree from frontier");
                         BridgeTree::<_, MERKLE_DEPTH>::from_frontier(MAX_CHECKPOINTS, frontier.clone())
                     } else {
-                        println!("Creating empty tree");
+                        info!("Creating empty tree because couldn't get frontier");
                         BridgeTree::<_, MERKLE_DEPTH>::new(MAX_CHECKPOINTS)
                     }
                 } else {
-                    println!("LightwalletD returned empty orchard tree, creating empty tree");
+                    info!("LightwalletD returned empty orchard tree, creating empty tree");
                     BridgeTree::<_, MERKLE_DEPTH>::new(MAX_CHECKPOINTS)
                 };
                 *orchard_witnesses = Some(witnesses);
