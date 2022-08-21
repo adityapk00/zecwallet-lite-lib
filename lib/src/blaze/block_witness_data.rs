@@ -297,6 +297,8 @@ impl BlockAndWitnessData {
             info!("Erased orchard tree");
             orchard_witnesses.write().await.take();
         }
+
+        info!("Invalidated block {}", reorg_height);
     }
 
     /// Start a new sync where we ingest all the blocks

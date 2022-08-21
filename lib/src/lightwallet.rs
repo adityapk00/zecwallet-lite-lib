@@ -720,6 +720,8 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightWallet<P> {
     pub async fn clear_all(&self) {
         self.blocks.write().await.clear();
         self.txns.write().await.clear();
+        self.verified_tree.write().await.take();
+        self.orchard_witnesses.write().await.take();
     }
 
     pub async fn set_initial_block(&self, height: u64, hash: &str, _sapling_tree: &str) -> bool {
