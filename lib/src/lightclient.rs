@@ -1462,14 +1462,14 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
             let mut orchard_witnesses = self.wallet.orchard_witnesses.write().await;
 
             if orchard_witnesses.is_none() {
-                let tree_state = GrpcConnector::get_merkle_tree(uri.clone(), last_scanned_height).await?;
-                info!(
-                    "Attempting to get orchard tree from block {} with str `{}`",
-                    last_scanned_height, tree_state.orchard_tree
-                );
+                info!("Attempting to get orchard tree from block {}", last_scanned_height);
 
                 // Populate the orchard witnesses from the previous block's frontier
-                let orchard_tree = hex::decode(tree_state.orchard_tree).unwrap();
+                let orchard_tree = match GrpcConnector::get_merkle_tree(uri.clone(), last_scanned_height).await {
+                    Ok(tree_state) => hex::decode(tree_state.orchard_tree).unwrap(),
+                    Err(_) => vec![],
+                };
+
                 let witnesses = if orchard_tree.len() > 0 {
                     let tree =
                         CommitmentTree::<MerkleHashOrchard>::read(&orchard_tree[..]).map_err(|e| format!("{}", e))?;
