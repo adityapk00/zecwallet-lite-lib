@@ -606,6 +606,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
             Ok(i) => {
                 let o = object! {
                     "version" => i.version,
+                    "zcashd_version" => format!("{}/{}", i.zcashd_build, i.zcashd_subversion),
                     "git_commit" => i.git_commit,
                     "server_uri" => self.get_server_uri().to_string(),
                     "vendor" => i.vendor,
