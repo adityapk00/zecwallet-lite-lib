@@ -6,6 +6,7 @@ use log::{error, info};
 
 use zecwalletlitelib::lightclient::lightclient_config::LightClientConfig;
 use zecwalletlitelib::{commands, lightclient::LightClient};
+use zecwalletlitelib::{MainNetwork, Parameters};
 
 pub mod version;
 
@@ -84,7 +85,7 @@ pub fn startup(
     print_updates: bool,
 ) -> io::Result<(Sender<(String, Vec<String>)>, Receiver<String>)> {
     // Try to get the configuration
-    let (config, latest_block_height) = LightClientConfig::create_on_data_dir(server.clone(), data_dir)?;
+    let (config, latest_block_height) = LightClientConfig::create(MainNetwork, server.clone(), data_dir)?;
     
     let lightclient = match seed {
         Some(phrase) => Arc::new(LightClient::new_from_phrase(phrase, &config, birthday, false)?),
@@ -145,7 +146,14 @@ pub fn start_interactive(command_tx: Sender<(String, Vec<String>)>, resp_rx: Rec
     };
 
     let info = send_command("info".to_string(), vec![]);
-    let chain_name = json::parse(&info).unwrap()["chain_name"].as_str().unwrap().to_string();
+    let chain_name = match json::parse(&info) {
+        Ok(s) => s["chain_name"].as_str().unwrap().to_string(),
+        Err(e) => {
+            error!("{}", e);
+            eprintln!("Couldn't get chain name. {}", e);
+            return;
+        }
+    };
 
     loop {
         // Read the height first
@@ -200,7 +208,9 @@ pub fn start_interactive(command_tx: Sender<(String, Vec<String>)>, resp_rx: Rec
     }
 }
 
-pub fn command_loop(lightclient: Arc<LightClient>) -> (Sender<(String, Vec<String>)>, Receiver<String>) {
+pub fn command_loop<P: Parameters + Send + Sync + 'static>(
+    lightclient: Arc<LightClient<P>>,
+) -> (Sender<(String, Vec<String>)>, Receiver<String>) {
     let (command_tx, command_rx) = channel::<(String, Vec<String>)>();
     let (resp_tx, resp_rx) = channel::<String>();
 
@@ -230,13 +240,14 @@ pub fn command_loop(lightclient: Arc<LightClient>) -> (Sender<(String, Vec<Strin
 
 pub fn attempt_recover_seed(_password: Option<String>) {
     // Create a Light Client Config in an attempt to recover the file.
-    let _config = LightClientConfig {
+    let _config = LightClientConfig::<MainNetwork> {
         server: "0.0.0.0:0".parse().unwrap(),
         chain_name: "main".to_string(),
         sapling_activation_height: 0,
+        anchor_offset: 0,
         monitor_mempool: false,
-        anchor_offset: [0u32; 5],
         data_dir: None,
+        params: MainNetwork,
     };
 
 }
