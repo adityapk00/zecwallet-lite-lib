@@ -20,7 +20,7 @@ rand = "0.8.5"
 http = "0.2.4"
 tonic = {version = "0.7.2", features = ["tls", "tls-roots"]}
 prost = "0.10.4"
-tokio =  { version = "1.20.0", features = ["full"] }
+tokio =  { version = "1.20.4", features = ["full"] }
 tokio-stream = "0.1.9"
 tokio-rustls = "0.23.4"
 futures = "0.3.21"
