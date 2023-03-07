@@ -10,7 +10,7 @@ use crate::{
     lightclient::lightclient_config::MAX_REORG,
     lightwallet::{self, data::WalletTx, keys::KeystoresKind, message::Message, now, LightWallet},
 };
-use futures::future::join_all;
+use futures::{stream::FuturesUnordered, StreamExt};
 use json::{array, object, JsonValue};
 use log::{error, info, warn};
 use std::{
@@ -30,12 +30,7 @@ use tokio::{
     time::sleep,
 };
 use zcash_client_backend::encoding::{decode_payment_address, encode_payment_address};
-use zcash_primitives::{
-    block::BlockHash,
-    consensus::{BlockHeight, BranchId},
-    memo::{Memo, MemoBytes},
-    transaction::{components::amount::DEFAULT_FEE, Transaction, TxId},
-};
+use zcash_primitives::{block::BlockHash, consensus::{BlockHeight, BranchId}, consensus, memo::{Memo, MemoBytes}, transaction::{components::amount::DEFAULT_FEE, Transaction, TxId}};
 
 cfg_if::cfg_if! {
     if #[cfg(feature = "hsm-compat")] {
@@ -65,9 +60,9 @@ impl WalletStatus {
     }
 }
 
-pub struct LightClient {
-    pub(crate) config: LightClientConfig,
-    pub(crate) wallet: LightWallet,
+pub struct LightClient<P> {
+    pub(crate) config: LightClientConfig<P>,
+    pub(crate) wallet: LightWallet<P>,
 
     mempool_monitor: std::sync::RwLock<Option<std::thread::JoinHandle<()>>>,
 
@@ -76,10 +71,10 @@ pub struct LightClient {
     bsync_data: Arc<RwLock<BlazeSyncData>>,
 }
 
-impl LightClient {
+impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
     /// Method to create a test-only version of the LightClient
     #[allow(dead_code)]
-    pub async fn test_new(config: &LightClientConfig, seed_phrase: Option<String>, height: u64) -> io::Result<Self> {
+    pub async fn test_new(config: &LightClientConfig<P>, seed_phrase: Option<String>, height: u64) -> io::Result<Self> {
         if seed_phrase.is_some() && config.wallet_exists() {
             return Err(Error::new(
                 ErrorKind::AlreadyExists,
@@ -88,7 +83,7 @@ impl LightClient {
         }
 
         let l = LightClient {
-            wallet: LightWallet::new(config.clone(), seed_phrase, height, 1)?,
+            wallet: LightWallet::<P>::new(config.clone(), seed_phrase, height, 1)?,
             config: config.clone(),
             mempool_monitor: std::sync::RwLock::new(None),
             bsync_data: Arc::new(RwLock::new(BlazeSyncData::new(&config))),
@@ -176,13 +171,13 @@ impl LightClient {
         match self.config.get_zcash_params_path() {
             Ok(zcash_params_dir) => {
                 // Create the sapling output and spend params files
-                match LightClient::write_file_if_not_exists(&zcash_params_dir, "sapling-output.params", &sapling_output)
+                match LightClient::<P>::write_file_if_not_exists(&zcash_params_dir, "sapling-output.params", &sapling_output)
                 {
                     Ok(_) => {}
                     Err(e) => return Err(format!("Warning: Couldn't write the output params!\n{}", e)),
                 };
 
-                match LightClient::write_file_if_not_exists(&zcash_params_dir, "sapling-spend.params", &sapling_spend) {
+                match LightClient::<P>::write_file_if_not_exists(&zcash_params_dir, "sapling-spend.params", &sapling_spend) {
                     Ok(_) => {}
                     Err(e) => return Err(format!("Warning: Couldn't write the spend params!\n{}", e)),
                 }
@@ -223,7 +218,7 @@ impl LightClient {
         };
     }
 
-    fn new_wallet(config: &LightClientConfig, latest_block: u64, num_zaddrs: u32) -> io::Result<Self> {
+    fn new_wallet(config: &LightClientConfig<P>, latest_block: u64, num_zaddrs: u32) -> io::Result<Self> {
         Runtime::new().unwrap().block_on(async move {
             let l = LightClient {
                 wallet: LightWallet::new(config.clone(), None, latest_block, num_zaddrs)?,
@@ -248,7 +243,7 @@ impl LightClient {
     }
 
     #[cfg(feature = "ledger-support")]
-    pub fn with_ledger(config: &LightClientConfig, latest_block: u64) -> io::Result<Self> {
+    pub fn with_ledger(config: &LightClientConfig<P>, latest_block: u64) -> io::Result<Self> {
         use crate::lightwallet::keys::LedgerKeystore;
 
         if config.wallet_exists() {}
@@ -291,7 +286,7 @@ impl LightClient {
 
     /// Create a brand new wallet with a new seed phrase. Will fail if a wallet file
     /// already exists on disk
-    pub fn new(config: &LightClientConfig, latest_block: u64) -> io::Result<Self> {
+    pub fn new(config: &LightClientConfig<P>, latest_block: u64) -> io::Result<Self> {
         #[cfg(all(not(target_os = "ios"), not(target_os = "android")))]
         {
             if config.wallet_exists() {
@@ -307,7 +302,7 @@ impl LightClient {
 
     pub fn new_from_phrase(
         seed_phrase: String,
-        config: &LightClientConfig,
+        config: &LightClientConfig<P>,
         birthday: u64,
         overwrite: bool,
     ) -> io::Result<Self> {
@@ -358,7 +353,7 @@ impl LightClient {
         lr
     }
 
-    pub fn read_from_buffer<R: Read>(config: &LightClientConfig, mut reader: R) -> io::Result<Self> {
+    pub fn read_from_buffer<R: Read>(config: &LightClientConfig<P>, mut reader: R) -> io::Result<Self> {
         let l = Runtime::new().unwrap().block_on(async move {
             let wallet = LightWallet::read(&mut reader, config).await?;
 
@@ -379,7 +374,7 @@ impl LightClient {
         l
     }
 
-    pub fn read_from_disk(config: &LightClientConfig) -> io::Result<Self> {
+    pub fn read_from_disk(config: &LightClientConfig<P>) -> io::Result<Self> {
         let wallet_path = if config.wallet_exists() {
             config.get_wallet_path()
         } else {
@@ -720,7 +715,7 @@ impl LightClient {
                         if !all_notes && nd.spent.is_some() {
                             None
                         } else {
-                            let address = LightWallet::note_address(self.config.hrp_sapling_address(), nd);
+                            let address = LightWallet::<P>::note_address(self.config.hrp_sapling_address(), nd);
                             let spendable = address.is_some() &&
                                                     spendable_address.contains(&address.clone().unwrap()) &&
                                                     wtx.block <= anchor_height && nd.spent.is_none() && nd.unconfirmed_spent.is_none();
@@ -836,7 +831,7 @@ impl LightClient {
                 let memo_bytes: MemoBytes = m.memo.clone().into();
                 object! {
                     "to" => encode_payment_address(self.config.hrp_sapling_address(), &m.to),
-                    "memo" => LightWallet::memo_str(Some(m.memo)),
+                    "memo" => LightWallet::<P>::memo_str(Some(m.memo)),
                     "memohex" => hex::encode(memo_bytes.as_slice())
                 }
             }
@@ -882,7 +877,7 @@ impl LightClient {
                             let mut o = object! {
                                 "address" => om.address.clone(),
                                 "value"   => om.value,
-                                "memo"    => LightWallet::memo_str(Some(om.memo.clone()))
+                                "memo"    => LightWallet::<P>::memo_str(Some(om.memo.clone()))
                             };
 
                             if include_memo_hex {
@@ -919,8 +914,8 @@ impl LightClient {
                         "txid"         => format!("{}", v.txid),
                         "amount"       => nd.note.value as i64,
                         "zec_price"    => v.zec_price.map(|p| (p * 100.0).round() / 100.0),
-                        "address"      => LightWallet::note_address(self.config.hrp_sapling_address(), nd),
-                        "memo"         => LightWallet::memo_str(nd.memo.clone())
+                        "address"      => LightWallet::<P>::note_address(self.config.hrp_sapling_address(), nd),
+                        "memo"         => LightWallet::<P>::memo_str(nd.memo.clone())
                     };
 
                     if include_memo_hex {
@@ -1191,7 +1186,7 @@ impl LightClient {
         self.bsync_data.read().await.sync_status.read().await.clone()
     }
 
-    pub fn start_mempool_monitor(lc: Arc<LightClient>) {
+    pub fn start_mempool_monitor(lc: Arc<LightClient<P>>) {
         if !lc.config.monitor_mempool {
             return;
         }
@@ -1201,6 +1196,7 @@ impl LightClient {
         }
 
         let config = lc.config.clone();
+        let parameters = config.get_params();
         let uri = config.server.clone();
         let lci = lc.clone();
 
@@ -1219,7 +1215,10 @@ impl LightClient {
                     let price = lc1.wallet.price.clone();
 
                     while let Some(rtx) = mempool_rx.recv().await {
-                        if let Ok(tx) = Transaction::read(&rtx.data[..]) {
+                        if let Ok(tx) = Transaction::read(
+                            &rtx.data[..],
+                            BranchId::for_height(&parameters, BlockHeight::from_u32(rtx.height as u32)),
+                        ) {
                             let price = price.read().await.clone();
                             //info!("Mempool attempting to scan {}", tx.txid());
 
@@ -1395,6 +1394,7 @@ impl LightClient {
         }
 
         let bsync_data = self.bsync_data.clone();
+        let spam_filter_threshold = self.wallet.wallet_options.read().await.spam_threshold;
 
         let start_block = latest_block;
         let end_block = last_scanned_height + 1;
@@ -1432,7 +1432,8 @@ impl LightClient {
             .await;
 
         // Full Tx GRPC fetcher
-        let (fulltx_fetcher_handle, fulltx_fetcher_tx) = grpc_connector.start_fulltx_fetcher().await;
+        let params = self.config.get_params();
+        let (fulltx_fetcher_handle, fulltx_fetcher_tx) = grpc_connector.start_fulltx_fetcher(params).await;
 
         // Transparent Transactions Fetcher
         let (taddr_fetcher_handle, taddr_fetcher_tx) = grpc_connector.start_taddr_txn_fetcher().await;
@@ -1463,6 +1464,7 @@ impl LightClient {
                     [block_and_witness_data_tx, trial_decrypts_tx],
                     start_block,
                     end_block,
+                    spam_filter_threshold,
                     reorg_rx,
                 )
                 .await
@@ -1471,10 +1473,11 @@ impl LightClient {
         // We wait first for the node's to be updated. This is where reorgs will be handled, so all the steps done after this phase will
         // assume that the reorgs are done.
         let earliest_block = block_and_witness_handle.await.unwrap().unwrap();
+        let params = self.config.get_params();
 
         // 1. Fetch the transparent txns only after reorgs are done.
         let taddr_txns_handle = FetchTaddrTxns::new(self.wallet.keys_clone())
-            .start(start_block, earliest_block, taddr_fetcher_tx, fetch_taddr_txns_tx)
+            .start(start_block, earliest_block, taddr_fetcher_tx, fetch_taddr_txns_tx,params)
             .await;
 
         // 2. Notify the notes updater that the blocks are done updating
@@ -1484,28 +1487,22 @@ impl LightClient {
         let block_data = bsync_data.clone();
         let verify_handle = tokio::spawn(async move { block_data.read().await.block_data.verify_sapling_tree().await });
 
+        // Collect all the handles in a Unordered Future, so if any of them fails, we immediately know.
+        let mut tasks1 = FuturesUnordered::new();
+        tasks1.push(trial_decrypts_handle);
+        tasks1.push(fetch_compact_blocks_handle);
+        tasks1.push(taddr_fetcher_handle);
+        tasks1.push(update_notes_handle);
+        tasks1.push(taddr_txns_handle);
+
         // Wait for everything to finish
-
-        // Await all the futures
-        let r1 = tokio::spawn(async move {
-            join_all(vec![trial_decrypts_handle, fulltx_fetcher_handle, taddr_fetcher_handle])
-                .await
-                .into_iter()
-                .map(|r| r.map_err(|e| format!("{}", e)))
-                .collect::<Result<(), _>>()
-        });
-
-        join_all(vec![
-            update_notes_handle,
-            taddr_txns_handle,
-            fetch_compact_blocks_handle,
-            fetch_full_txns_handle,
-            r1,
-        ])
-        .await
-        .into_iter()
-        .map(|r| r.map_err(|e| format!("{}", e))?)
-        .collect::<Result<(), String>>()?;
+        while let Some(r) = tasks1.next().await {
+            match r {
+                Ok(Ok(_)) => (),
+                Ok(Err(s)) => return Err(s),
+                Err(e) => return Err(e.to_string()),
+            };
+        }
 
         let (verified, heighest_tree) = verify_handle.await.map_err(|e| e.to_string())?;
         info!("Sapling tree verification {}", verified);

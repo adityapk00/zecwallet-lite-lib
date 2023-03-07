@@ -6,8 +6,7 @@ use zcash_primitives::{
     legacy::TransparentAddress,
     memo::MemoBytes,
     merkle_tree::MerklePath,
-    primitives::{Diversifier, Note, PaymentAddress, SaplingIvk},
-    sapling::Node,
+    sapling::{Diversifier, Node, Note, PaymentAddress, SaplingIvk},
     transaction::{
         components::{Amount, OutPoint, TxOut},
         Transaction,
@@ -17,7 +16,7 @@ use zcash_primitives::{
 cfg_if::cfg_if! {
     if #[cfg(feature = "hsm-compat")] {
         mod txprover_trait {
-            use zcash_primitives::prover::TxProver;
+            use zcash_primitives::sapling::prover::TxProver;
             use zcash_hsmbuilder::txprover::HsmTxProver;
 
             /// This trait is a marker trait used to identify tx provers
@@ -31,10 +30,10 @@ cfg_if::cfg_if! {
         }
 
         pub use txprover_trait::BothTxProver as TxProver;
-        pub use zcash_hsmbuilder::txbuilder::TransactionMetadata;
+        pub use zcash_hsmbuilder::txbuilder::SaplingMetadata;
     } else {
-        pub use zcash_primitives::prover::TxProver;
-        pub use zcash_primitives::transaction::builder::TransactionMetadata;
+        pub use zcash_primitives::sapling::prover::TxProver;
+        pub use zcash_primitives::transaction::builder::SaplingMetadata;
     }
 }
 
@@ -82,5 +81,5 @@ pub trait Builder {
         consensus_branch_id: BranchId,
         prover: &TX,
         progress: Option<mpsc::Sender<usize>>,
-    ) -> Result<(Transaction, TransactionMetadata), Self::Error>;
+    ) -> Result<(Transaction, SaplingMetadata), Self::Error>;
 }

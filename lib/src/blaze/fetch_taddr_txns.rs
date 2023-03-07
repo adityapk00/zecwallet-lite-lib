@@ -10,14 +10,14 @@ use tokio::{
     },
     task::JoinHandle,
 };
-use zcash_primitives::{consensus::BlockHeight, transaction::Transaction};
+use zcash_primitives::{consensus::{BranchId, BlockHeight}, consensus, transaction::Transaction};
 
-pub struct FetchTaddrTxns {
-    keys: Arc<RwLock<Keystores>>,
+pub struct FetchTaddrTxns<P> {
+    keys: Arc<RwLock<Keystores<P>>>,
 }
 
-impl FetchTaddrTxns {
-    pub fn new(keys: Arc<RwLock<Keystores>>) -> Self {
+impl <P: consensus::Parameters + Send + Sync + 'static> FetchTaddrTxns<P> {
+    pub fn new(keys: Arc<RwLock<Keystores<P>>>) -> Self {
         Self { keys }
     }
 
@@ -30,6 +30,7 @@ impl FetchTaddrTxns {
             oneshot::Sender<Vec<UnboundedReceiver<Result<RawTransaction, String>>>>,
         )>,
         full_tx_scanner: UnboundedSender<(Transaction, BlockHeight)>,
+        network: P,
     ) -> JoinHandle<Result<(), String>> {
         let keys = self.keys.clone();
 
@@ -111,7 +112,10 @@ impl FetchTaddrTxns {
                     }
                     prev_height = rtx.height;
 
-                    let tx = Transaction::read(&rtx.data[..]).map_err(|e| format!("Error reading Tx: {}", e))?;
+                    let tx = Transaction::read(
+                        &rtx.data[..],
+                        BranchId::for_height(&network, BlockHeight::from_u32(rtx.height as u32)),
+                    ).map_err(|e| format!("Error reading Tx: {}", e))?;
                     full_tx_scanner
                         .send((tx, BlockHeight::from_u32(rtx.height as u32)))
                         .unwrap();
@@ -143,8 +147,8 @@ mod test {
     use tokio::sync::RwLock;
     use tokio::{sync::mpsc::unbounded_channel, task::JoinHandle};
     use zcash_primitives::consensus::BlockHeight;
-
     use crate::compact_formats::RawTransaction;
+    use crate::lightclient::lightclient_config::UnitTestNetwork;
     use zcash_primitives::transaction::{Transaction, TransactionData};
 
     use crate::lightwallet::keys::InMemoryKeys;
@@ -155,7 +159,7 @@ mod test {
     #[tokio::test]
     async fn out_of_order_txns() {
         // 5 t addresses
-        let mut keys = InMemoryKeys::new_empty();
+        let mut keys = InMemoryKeys::<P>::new_empty();
         let gened_taddrs: Vec<_> = (0..5).into_iter().map(|n| format!("taddr{}", n)).collect();
         keys.tkeys = gened_taddrs.iter().map(|ta| WalletTKey::empty(ta)).collect::<Vec<_>>();
 

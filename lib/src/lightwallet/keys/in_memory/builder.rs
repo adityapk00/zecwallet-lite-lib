@@ -7,8 +7,7 @@ use zcash_primitives::{
     legacy::TransparentAddress,
     memo::MemoBytes,
     merkle_tree::MerklePath,
-    primitives::{Diversifier, Note, PaymentAddress, SaplingIvk, ViewingKey},
-    sapling::Node,
+    sapling::{Diversifier, Node, Note, PaymentAddress, SaplingIvk},
     transaction::{
         builder::{Builder as ZBuilder, Error as ZBuilderError},
         components::{Amount, OutPoint, TxOut},
@@ -19,7 +18,7 @@ use zcash_primitives::{
 use crate::lightwallet::{
     keys::{
         in_memory::InMemoryKeys,
-        txbuilder::{TransactionMetadata, TxProver},
+        txbuilder::{SaplingMetadata, TxProver},
         Builder,
     },
     utils::compute_taddr,
@@ -37,11 +36,11 @@ pub enum BuilderError {
 
 pub struct InMemoryBuilder<'a, P: Parameters> {
     inner: ZBuilder<'a, P, OsRng>,
-    keystore: &'a mut InMemoryKeys,
+    keystore: &'a mut InMemoryKeys<P>,
 }
 
 impl<'a, P: Parameters> InMemoryBuilder<'a, P> {
-    pub fn new(params: P, target_height: BlockHeight, keystore: &'a mut InMemoryKeys) -> Self {
+    pub fn new(params: P, target_height: BlockHeight, keystore: &'a mut InMemoryKeys<P>) -> Self {
         Self {
             inner: ZBuilder::new(params, target_height),
             keystore,
@@ -121,7 +120,7 @@ impl<'a, P: Parameters + Send + Sync> Builder for InMemoryBuilder<'a, P> {
         consensus_branch_id: BranchId,
         prover: &TX,
         progress: Option<mpsc::Sender<usize>>,
-    ) -> Result<(Transaction, TransactionMetadata), Self::Error> {
+    ) -> Result<(Transaction, SaplingMetadata), Self::Error> {
         let progress = if let Some(progress) = progress {
             //wrap given channel with the one expected by the builder
             let (tx, rx) = std::sync::mpsc::channel();

@@ -11,13 +11,8 @@ use zcash_client_backend::{
     address,
     encoding::{encode_extended_full_viewing_key, encode_extended_spending_key, encode_payment_address},
 };
-use zcash_primitives::{
-    consensus::{BlockHeight, Network},
-    legacy::TransparentAddress,
-    primitives::{PaymentAddress, SaplingIvk},
-    serialize::Vector,
-    zip32::{ChildIndex, ExtendedFullViewingKey, ExtendedSpendingKey},
-};
+use zcash_encoding::Vector;
+use zcash_primitives::{consensus::{BlockHeight, Network}, consensus, legacy::TransparentAddress, sapling::{PaymentAddress, SaplingIvk}, zip32::{ChildIndex, ExtendedFullViewingKey, ExtendedSpendingKey}};
 
 use crate::{
     lightclient::lightclient_config::{LightClientConfig, GAP_RULE_UNUSED_ADDRESSES},
@@ -34,9 +29,9 @@ pub use builder::{BuilderError as InMemoryBuilderError, InMemoryBuilder};
 
 // Manages all the keys in the wallet. Note that the RwLock for this is present in `lightwallet.rs`, so we'll
 // assume that this is already gone through a RwLock, so we don't lock any of the individual fields.
-pub struct InMemoryKeys {
+pub struct InMemoryKeys<P> {
     // TODO: This struct is duplicated with LightWallet and LightClient
-    config: LightClientConfig,
+    config: LightClientConfig<P>,
 
     // Is the wallet encrypted? If it is, then when writing to disk, the seed is always encrypted
     // and the individual spending keys are not written
@@ -60,7 +55,7 @@ pub struct InMemoryKeys {
     pub(crate) tkeys: Vec<WalletTKey>,
 }
 
-impl InMemoryKeys {
+impl<P: consensus::Parameters> InMemoryKeys<P> {
     pub fn serialized_version() -> u64 {
         return 21;
     }
@@ -80,7 +75,7 @@ impl InMemoryKeys {
         }
     }
 
-    pub fn new(config: &LightClientConfig, seed_phrase: Option<String>, num_zaddrs: u32) -> Result<Self, String> {
+    pub fn new(config: &LightClientConfig<P>, seed_phrase: Option<String>, num_zaddrs: u32) -> Result<Self, String> {
         let mut seed_bytes = [0u8; 32];
 
         if seed_phrase.is_none() {
@@ -134,7 +129,7 @@ impl InMemoryKeys {
         Ok(this)
     }
 
-    pub fn read_old<R: Read>(version: u64, mut reader: R, config: &LightClientConfig) -> io::Result<Self> {
+    pub fn read_old<R: Read>(version: u64, mut reader: R, config: &LightClientConfig<P>) -> io::Result<Self> {
         let encrypted = if version >= 4 { reader.read_u8()? > 0 } else { false };
 
         let mut enc_seed = [0u8; 48];
@@ -259,7 +254,7 @@ impl InMemoryKeys {
         })
     }
 
-    pub fn read<R: Read>(mut reader: R, config: &LightClientConfig) -> io::Result<Self> {
+    pub fn read<R: Read>(mut reader: R, config: &LightClientConfig<P>) -> io::Result<Self> {
         let version = reader.read_u64::<LittleEndian>()?;
         if version > Self::serialized_version() {
             let e = format!(
@@ -342,7 +337,7 @@ impl InMemoryKeys {
         Ok(())
     }
 
-    pub fn config(&self) -> LightClientConfig {
+    pub fn config(&self) -> LightClientConfig<P> {
         self.config.clone()
     }
 
@@ -768,7 +763,7 @@ impl InMemoryKeys {
     }
 
     pub fn get_zaddr_from_bip39seed(
-        config: &LightClientConfig,
+        config: &LightClientConfig<P>,
         bip39_seed: &[u8],
         pos: u32,
     ) -> (ExtendedSpendingKey, ExtendedFullViewingKey, PaymentAddress) {
@@ -788,7 +783,7 @@ impl InMemoryKeys {
         (extsk, extfvk, address)
     }
 
-    pub fn is_shielded_address(addr: &String, config: &LightClientConfig) -> bool {
+    pub fn is_shielded_address(addr: &String, config: &LightClientConfig<P>) -> bool {
         match address::RecipientAddress::decode(&config.get_params(), addr) {
             Some(address::RecipientAddress::Shielded(_)) => true,
             _ => false,
@@ -803,7 +798,7 @@ pub enum InMemoryKeysError {
 }
 
 #[async_trait::async_trait]
-impl InsecureKeystore for InMemoryKeys {
+impl <P: consensus::Parameters> InsecureKeystore for InMemoryKeys<P> {
     type Error = InMemoryKeysError;
 
     async fn get_seed_phrase(&self) -> Result<String, Self::Error> {
@@ -855,12 +850,12 @@ impl InsecureKeystore for InMemoryKeys {
     }
 }
 
-impl<'this> KeystoreBuilderLifetime<'this> for InMemoryKeys {
+impl<'this,P: consensus::Parameters> KeystoreBuilderLifetime<'this> for InMemoryKeys<P> {
     type Builder = InMemoryBuilder<'this, Network>;
 }
 
 #[async_trait::async_trait]
-impl Keystore for InMemoryKeys {
+impl <P: consensus::Parameters>Keystore for InMemoryKeys<P> {
     type Error = InMemoryKeysError;
 
     async fn get_t_pubkey(&self, path: &[ChildIndex]) -> Result<secp256k1::PublicKey, Self::Error> {

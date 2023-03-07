@@ -15,10 +15,10 @@ use zcash_client_backend::encoding::{
 use zcash_primitives::consensus::BlockHeight;
 use zcash_primitives::memo::Memo;
 use zcash_primitives::merkle_tree::{CommitmentTree, IncrementalWitness};
-use zcash_primitives::note_encryption::SaplingNoteEncryption;
-use zcash_primitives::primitives::{Note, Rseed, ValueCommitment};
 use zcash_primitives::redjubjub::Signature;
+use zcash_primitives::sapling::note_encryption::SaplingNoteEncryption;
 use zcash_primitives::sapling::Node;
+use zcash_primitives::sapling::{Note, Rseed, ValueCommitment};
 use zcash_primitives::transaction::components::amount::DEFAULT_FEE;
 use zcash_primitives::transaction::components::{OutputDescription, GROTH_PROOF_SIZE};
 use zcash_primitives::transaction::{Transaction, TransactionData};

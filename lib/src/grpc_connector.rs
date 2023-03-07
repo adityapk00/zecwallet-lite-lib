@@ -1,3 +1,4 @@
+use std::cmp;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -6,13 +7,11 @@ use crate::compact_formats::{
     BlockId, BlockRange, ChainSpec, CompactBlock, Empty, LightdInfo, PriceRequest, PriceResponse, RawTransaction,
     TransparentAddressBlockFilter, TreeState, TxFilter,
 };
-use futures::future::join_all;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use log::warn;
 
-use tokio::sync::mpsc::UnboundedReceiver;
-use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
+use tokio::sync::mpsc::{unbounded_channel, Sender, UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio_rustls::rustls::ClientConfig;
@@ -21,6 +20,8 @@ use tonic::{
     transport::{Channel, Error},
     Request,
 };
+use zcash_primitives::consensus;
+use zcash_primitives::consensus::{BlockHeight, BranchId};
 use zcash_primitives::transaction::{Transaction, TxId};
 
 #[derive(Clone)]
@@ -80,7 +81,7 @@ impl GrpcConnector {
     pub async fn start_taddr_txn_fetcher(
         &self,
     ) -> (
-        JoinHandle<()>,
+        JoinHandle<Result<(), String>>,
         oneshot::Sender<(
             (Vec<String>, u64, u64),
             oneshot::Sender<Vec<UnboundedReceiver<Result<RawTransaction, String>>>>,
@@ -96,7 +97,7 @@ impl GrpcConnector {
             let uri = uri.clone();
             if let Ok(((taddrs, start_height, end_height), result_tx)) = rx.await {
                 let mut tx_rs = vec![];
-                let mut tx_rs_workers = vec![];
+                let mut tx_rs_workers = FuturesUnordered::new();
 
                 // Create a stream for every t-addr
                 for taddr in taddrs {
@@ -114,18 +115,26 @@ impl GrpcConnector {
                 // Dispatch a set of recievers
                 result_tx.send(tx_rs).unwrap();
 
-                // // Wait for all the t-addr transactions to be fetched from LightwalletD and sent to the h1 handle.
-                join_all(tx_rs_workers).await;
+                // Wait for all the t-addr transactions to be fetched from LightwalletD and sent to the h1 handle.
+                while let Some(r) = tx_rs_workers.next().await {
+                    match r {
+                        Ok(Ok(_)) => continue,
+                        Ok(Err(s)) => return Err(s),
+                        Err(r) => return Err(r.to_string()),
+                    }
+                }
             }
+            Ok(())
         });
 
         (h, tx)
     }
 
-    pub async fn start_fulltx_fetcher(
+    pub async fn start_fulltx_fetcher<P: consensus::Parameters + Send + Sync + 'static>(
         &self,
+        parameters: P,
     ) -> (
-        JoinHandle<()>,
+        JoinHandle<Result<(), String>>,
         UnboundedSender<(TxId, oneshot::Sender<Result<Transaction, String>>)>,
     ) {
         let (tx, mut rx) = unbounded_channel::<(TxId, oneshot::Sender<Result<Transaction, String>>)>();
@@ -135,8 +144,11 @@ impl GrpcConnector {
             let mut workers = FuturesUnordered::new();
             while let Some((txid, result_tx)) = rx.recv().await {
                 let uri = uri.clone();
+                let parameters = parameters.clone();
                 workers.push(tokio::spawn(async move {
-                    result_tx.send(Self::get_full_tx(uri.clone(), &txid).await).unwrap()
+                    result_tx
+                        .send(Self::get_full_tx(uri.clone(), &txid, parameters).await)
+                        .unwrap()
                 }));
 
                 // Do only 16 API calls in parallel, otherwise it might overflow OS's limit of
@@ -147,6 +159,8 @@ impl GrpcConnector {
                     }
                 }
             }
+
+            Ok(())
         });
 
         (h, tx)
@@ -156,7 +170,8 @@ impl GrpcConnector {
         &self,
         start_height: u64,
         end_height: u64,
-        receivers: &[UnboundedSender<CompactBlock>; 2],
+        spam_filter_threshold: i64,
+        receivers: &[Sender<CompactBlock>; 2],
     ) -> Result<(), String> {
         let mut client = self.get_client().await.map_err(|e| format!("{}", e))?;
 
@@ -172,6 +187,7 @@ impl GrpcConnector {
         let request = Request::new(BlockRange {
             start: Some(bs),
             end: Some(be),
+            spam_filter_threshold: cmp::max(0, spam_filter_threshold) as u64,
         });
 
         let mut response = client
@@ -180,20 +196,36 @@ impl GrpcConnector {
             .map_err(|e| format!("{}", e))?
             .into_inner();
 
-        while let Some(block) = response.message().await.map_err(|e| format!("{}", e))? {
-            receivers[0].send(block.clone()).map_err(|e| format!("{}", e))?;
-            receivers[1].send(block).map_err(|e| format!("{}", e))?;
+        // First download all blocks and save them locally, so we don't timeout
+        let mut block_cache = Vec::new();
+
+        while let Some(block) = response.message().await.map_err(|e| {
+            // println!("first error");
+            format!("{}", e)
+        })? {
+            block_cache.push(block);
+        }
+
+        // Send all the blocks to the recievers
+        for block in block_cache {
+            //println!("grpc connector Sent {}", block.height);
+            receivers[0].send(block.clone()).await.map_err(|e| format!("{}", e))?;
+            receivers[1].send(block).await.map_err(|e| format!("{}", e))?;
         }
 
         Ok(())
     }
 
-    async fn get_full_tx(uri: http::Uri, txid: &TxId) -> Result<Transaction, String> {
+    async fn get_full_tx<P: consensus::Parameters + Send + Sync + 'static>(
+        uri: http::Uri,
+        txid: &TxId,
+        parameters: P,
+    ) -> Result<Transaction, String> {
         let client = Arc::new(GrpcConnector::new(uri));
         let request = Request::new(TxFilter {
             block: None,
             index: 0,
-            hash: txid.0.to_vec(),
+            hash: txid.as_ref().to_vec(),
         });
 
         // log::info!("Full fetching {}", txid);
@@ -204,8 +236,12 @@ impl GrpcConnector {
             .map_err(|e| format!("Error getting client: {:?}", e))?;
 
         let response = client.get_transaction(request).await.map_err(|e| format!("{}", e))?;
-
-        Transaction::read(&response.into_inner().data[..]).map_err(|e| format!("Error parsing Transaction: {}", e))
+        let height = response.get_ref().height as u32;
+        Transaction::read(
+            &response.into_inner().data[..],
+            BranchId::for_height(&parameters, BlockHeight::from_u32(height)),
+        )
+            .map_err(|e| format!("Error parsing Transaction: {}", e))
     }
 
     async fn get_taddr_txns(
@@ -235,7 +271,10 @@ impl GrpcConnector {
 
         let args = TransparentAddressBlockFilter {
             address: taddr,
-            range: Some(BlockRange { start, end }),
+            range: Some(BlockRange {
+                start,
+                end ,
+                spam_filter_threshold: 0,}),
         };
         let request = Request::new(args.clone());
 

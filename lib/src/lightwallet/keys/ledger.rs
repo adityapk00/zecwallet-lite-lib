@@ -11,20 +11,10 @@ use rand::rngs::OsRng;
 use secp256k1::PublicKey as SecpPublicKey;
 use tokio::sync::{mpsc, RwLock};
 use zcash_client_backend::encoding::encode_payment_address;
-use zcash_primitives::{
-    consensus::{BlockHeight, BranchId, Network, Parameters},
-    keys::OutgoingViewingKey,
-    legacy::TransparentAddress,
-    memo::MemoBytes,
-    merkle_tree::MerklePath,
-    primitives::{Diversifier, Note, Nullifier, PaymentAddress, SaplingIvk},
-    sapling::Node,
-    transaction::{
-        components::{amount::DEFAULT_FEE, Amount, OutPoint, TxOut},
-        Transaction,
-    },
-    zip32::{ChildIndex, DiversifierIndex},
-};
+use zcash_primitives::{consensus::{BlockHeight, BranchId, Network, Parameters}, consensus, keys::OutgoingViewingKey, legacy::TransparentAddress, memo::MemoBytes, merkle_tree::MerklePath, sapling::{Diversifier, Node, Note, Nullifier, PaymentAddress, SaplingIvk}, transaction::{
+    components::{amount::DEFAULT_FEE, Amount, OutPoint, TxOut},
+    Transaction,
+}, zip32::{ChildIndex, DiversifierIndex}};
 use zx_bip44::BIP44Path;
 
 use crate::{
@@ -32,7 +22,7 @@ use crate::{
     lightwallet::utils::compute_taddr,
 };
 
-use super::{Builder, InMemoryKeys, Keystore, KeystoreBuilderLifetime, TransactionMetadata, TxProver};
+use super::{Builder, InMemoryKeys, Keystore, KeystoreBuilderLifetime, SaplingMetadata, TxProver};
 
 #[derive(Debug, thiserror::Error)]
 pub enum LedgerError {
@@ -75,8 +65,8 @@ impl From<LedgerError> for std::io::Error {
 }
 
 //we use btreemap so we can get an ordered list when iterating by key
-pub struct LedgerKeystore {
-    pub config: LightClientConfig,
+pub struct LedgerKeystore<P> {
+    pub config: LightClientConfig<P>,
 
     app: ZcashApp<TransportNativeHID>,
     //this is a public key with a specific path
@@ -92,7 +82,7 @@ pub struct LedgerKeystore {
     shielded_addrs: RwLock<BTreeMap<[u32; 3], (SaplingIvk, Diversifier, OutgoingViewingKey)>>,
 }
 
-impl LedgerKeystore {
+impl <P: consensus::Parameters> LedgerKeystore<P> {
     /// Retrieve the connected ledger's "ID"
     ///
     /// Uses 44'/1'/0/0/0 derivation path
@@ -120,7 +110,7 @@ impl LedgerKeystore {
     ///
     /// Will error if there are no available devices or
     /// if the wrong app is open on the ledger device.
-    pub async fn new(config: LightClientConfig) -> Result<Self, LedgerError> {
+    pub async fn new(config: LightClientConfig<P>) -> Result<Self, LedgerError> {
         let app = Self::connect_ledger()?;
         let ledger_id = Self::get_id(&app).await?;
 
@@ -285,7 +275,7 @@ impl LedgerKeystore {
 }
 
 //in-memory keystore compatibility methods
-impl LedgerKeystore {
+impl <P: consensus::Parameters> LedgerKeystore<P> {
     /// Retrieve the OVK of a given path
     pub async fn get_ovk_of(&self, path: &[u32; 3]) -> Option<OutgoingViewingKey> {
         self.shielded_addrs
@@ -405,7 +395,7 @@ impl LedgerKeystore {
                     ChildIndex::from_index(path[4] + 1),
                 ]
             })
-            .unwrap_or_else(|| InMemoryKeys::t_derivation_path(self.config.get_coin_type(), 0));
+            .unwrap_or_else(|| InMemoryKeys::<P>::t_derivation_path(self.config.get_coin_type(), 0));
 
         let key = self.get_t_pubkey(&path).await;
 
@@ -431,7 +421,7 @@ impl LedgerKeystore {
                     ChildIndex::from_index(path[2] + 1),
                 ]
             })
-            .unwrap_or_else(|| InMemoryKeys::z_derivation_path(self.config.get_coin_type(), 0));
+            .unwrap_or_else(|| InMemoryKeys::<P>::z_derivation_path(self.config.get_coin_type(), 0));
 
         let addr = self.get_z_payment_address(&path).await;
 
@@ -443,7 +433,7 @@ impl LedgerKeystore {
 }
 
 //serialization and deserialization stuff
-impl LedgerKeystore {
+impl <P: consensus::Parameters> LedgerKeystore<P> {
     /// Keystore version
     ///
     /// Increase for any change in the format
@@ -500,7 +490,7 @@ impl LedgerKeystore {
         Ok(())
     }
 
-    pub async fn read<R: std::io::Read>(mut reader: R, config: &LightClientConfig) -> std::io::Result<Self> {
+    pub async fn read<R: std::io::Read>(mut reader: R, config: &LightClientConfig<P>) -> std::io::Result<Self> {
         use byteorder::{LittleEndian, ReadBytesExt};
         use std::io::{self, ErrorKind};
 
@@ -614,7 +604,7 @@ impl LedgerKeystore {
 }
 
 #[async_trait]
-impl Keystore for LedgerKeystore {
+impl <P: consensus::Parameters> Keystore for LedgerKeystore<P> {
     type Error = LedgerError;
 
     async fn get_t_pubkey(&self, path: &[ChildIndex]) -> Result<SecpPublicKey, Self::Error> {
@@ -686,19 +676,19 @@ impl Keystore for LedgerKeystore {
     }
 }
 
-impl<'this> KeystoreBuilderLifetime<'this> for LedgerKeystore {
+impl<'this,P: Parameters> KeystoreBuilderLifetime<'this> for LedgerKeystore<P> {
     type Builder = LedgerBuilder<'this, Network>;
 }
 
 pub struct LedgerBuilder<'k, P: Parameters> {
-    keystore: &'k mut LedgerKeystore,
+    keystore: &'k mut LedgerKeystore<P>,
     params: P,
     target_height: BlockHeight,
     inner: ZBuilder,
 }
 
 impl<'a, P: Parameters> LedgerBuilder<'a, P> {
-    pub fn new(params: P, target_height: BlockHeight, keystore: &'a mut LedgerKeystore) -> Self {
+    pub fn new(params: P, target_height: BlockHeight, keystore: &'a mut LedgerKeystore<P>) -> Self {
         Self {
             keystore,
             params,
@@ -790,7 +780,7 @@ impl<'a, P: Parameters + Send + Sync> Builder for LedgerBuilder<'a, P> {
         consensus_branch_id: BranchId,
         prover: &TX,
         progress: Option<mpsc::Sender<usize>>,
-    ) -> Result<(Transaction, TransactionMetadata), Self::Error> {
+    ) -> Result<(Transaction, SaplingMetadata), Self::Error> {
         let tx = self
             .inner
             .build(

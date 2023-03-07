@@ -11,12 +11,11 @@ use zcash_primitives::{
     consensus::{BlockHeight, MAIN_NETWORK},
     keys::OutgoingViewingKey,
     memo::Memo,
-    note_encryption::{
-        prf_ock, try_sapling_note_decryption, OutgoingCipherKey, SaplingNoteEncryption, ENC_CIPHERTEXT_SIZE,
-        OUT_CIPHERTEXT_SIZE,
-    },
-    primitives::{PaymentAddress, Rseed, SaplingIvk, ValueCommitment},
+    sapling::note_encryption::{prf_ock, try_sapling_note_decryption},
+    sapling::{PaymentAddress, Rseed, SaplingIvk, ValueCommitment},
 };
+
+use zcash_note_encryption::{NoteEncryption, OutgoingCipherKey, ENC_CIPHERTEXT_SIZE, OUT_CIPHERTEXT_SIZE};
 
 pub struct Message {
     pub to: PaymentAddress,
@@ -73,7 +72,7 @@ impl Message {
         let cmu = note.cmu();
 
         // Create the note encrytion object
-        let mut ne = SaplingNoteEncryption::new(ovk, note, self.to.clone(), self.memo.clone().into(), &mut rng);
+        let mut ne = NoteEncryption::new(ovk, note, self.to.clone(), self.memo.clone().into(), &mut rng);
 
         // EPK, which needs to be sent to the reciever.
         let epk = ne.epk().clone().into();
@@ -191,7 +190,7 @@ pub mod tests {
     use rand::{rngs::OsRng, Rng};
     use zcash_primitives::{
         memo::Memo,
-        primitives::{PaymentAddress, Rseed, SaplingIvk},
+        sapling::{PaymentAddress, Rseed, SaplingIvk},
         zip32::{ExtendedFullViewingKey, ExtendedSpendingKey},
     };
 

@@ -5,15 +5,13 @@ use std::{
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use log::error;
+use zcash_encoding::Vector;
 use zcash_primitives::{
     consensus::BlockHeight,
     memo::Memo,
     merkle_tree::IncrementalWitness,
-    primitives::{Note, Nullifier, PaymentAddress, SaplingIvk},
-    sapling::Node,
-    serialize::Vector,
+    sapling::{Node, Note, Nullifier, PaymentAddress, SaplingIvk},
     transaction::{components::TxOut, TxId},
-    zip32::ExtendedFullViewingKey,
 };
 
 use crate::lightclient::lightclient_config::MAX_REORG;

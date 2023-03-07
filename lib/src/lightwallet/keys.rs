@@ -5,12 +5,12 @@ use ripemd160::Digest;
 use sha2::Sha256;
 use zcash_primitives::{
     consensus::BlockHeight,
-    primitives::PaymentAddress,
+    sapling::PaymentAddress,
     zip32::{ChildIndex, ExtendedSpendingKey},
 };
 
 mod txbuilder;
-pub use txbuilder::{Builder, TransactionMetadata, TxProver};
+pub use txbuilder::{Builder, SaplingMetadata, TxProver};
 
 pub use in_memory::InMemoryBuilder;
 

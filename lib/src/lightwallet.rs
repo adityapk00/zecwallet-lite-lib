@@ -26,15 +26,8 @@ use zcash_client_backend::{
     address,
     encoding::{decode_extended_full_viewing_key, decode_extended_spending_key, encode_payment_address},
 };
-use zcash_primitives::serialize::Optional;
-use zcash_primitives::{
-    consensus::{BlockHeight, BranchId},
-    legacy::Script,
-    memo::Memo,
-    serialize::Vector,
-    transaction::components::{amount::DEFAULT_FEE, Amount, OutPoint, TxOut},
-    zip32::ExtendedFullViewingKey,
-};
+use zcash_encoding::{Optional, Vector};
+use zcash_primitives::{consensus::{BlockHeight, BranchId}, consensus, legacy::Script, memo::Memo, transaction::components::{amount::DEFAULT_FEE, Amount, OutPoint, TxOut}, zip32::ExtendedFullViewingKey};
 
 use self::{
     data::{BlockData, SaplingNoteData, Utxo, WalletZecPriceInfo},
@@ -107,23 +100,26 @@ pub enum MemoDownloadOption {
 #[derive(Debug, Clone, Copy)]
 pub struct WalletOptions {
     pub(crate) download_memos: MemoDownloadOption,
+    pub(crate) spam_threshold: i64,
 }
 
 impl Default for WalletOptions {
     fn default() -> Self {
         WalletOptions {
             download_memos: MemoDownloadOption::WalletMemos,
+            spam_threshold: -1,
         }
     }
 }
 
+
 impl WalletOptions {
     pub fn serialized_version() -> u64 {
-        return 1;
+        return 2;
     }
 
     pub fn read<R: Read>(mut reader: R) -> io::Result<Self> {
-        let _version = reader.read_u64::<LittleEndian>()?;
+        let version = reader.read_u64::<LittleEndian>()?;
 
         let download_memos = match reader.read_u8()? {
             0 => MemoDownloadOption::NoMemos,
@@ -137,20 +133,31 @@ impl WalletOptions {
             }
         };
 
-        Ok(Self { download_memos })
+        let spam_threshold = if version <= 1 {
+            -1
+        } else {
+            reader.read_i64::<LittleEndian>()?
+        };
+
+        Ok(Self {
+            download_memos,
+            spam_threshold,
+        })
     }
 
     pub fn write<W: Write>(&self, mut writer: W) -> io::Result<()> {
         // Write the version
         writer.write_u64::<LittleEndian>(Self::serialized_version())?;
 
-        writer.write_u8(self.download_memos as u8)
+        writer.write_u8(self.download_memos as u8)?;
+
+        writer.write_i64::<LittleEndian>(self.spam_threshold)
     }
 }
 
-pub struct LightWallet {
+pub struct LightWallet<P> {
     // All the keys in the wallet
-    keys: Arc<RwLock<Keystores>>,
+    keys: Arc<RwLock<Keystores<P>>>,
 
     // The block at which this wallet was born. Rescans
     // will start from here.
@@ -166,9 +173,9 @@ pub struct LightWallet {
     pub(crate) wallet_options: Arc<RwLock<WalletOptions>>,
 
     // Non-serialized fields
-    config: LightClientConfig,
+    config: LightClientConfig<P>,
 
-    // Heighest verified block
+    // Highest verified block
     pub(crate) verified_tree: Arc<RwLock<Option<TreeState>>>,
 
     // Progress of an outgoing tx
@@ -178,8 +185,8 @@ pub struct LightWallet {
     pub price: Arc<RwLock<WalletZecPriceInfo>>,
 }
 
-impl LightWallet {
-    pub fn with_keystore(config: LightClientConfig, height: u64, keystore: impl Into<Keystores>) -> Self {
+impl<P: consensus::Parameters + Send + Sync + 'static> LightWallet<P> {
+    pub fn with_keystore(config: LightClientConfig<P>, height: u64, keystore: impl Into<Keystores<P>>) -> Self {
         Self {
             keys: Arc::new(RwLock::new(keystore.into())),
             txns: Default::default(),
@@ -207,11 +214,11 @@ impl LightWallet {
         self.txns.clone()
     }
 
-    pub fn keys(&self) -> &RwLock<Keystores> {
+    pub fn keys(&self) -> &RwLock<Keystores<P>> {
         &self.keys
     }
 
-    pub fn keys_clone(&self) -> Arc<RwLock<Keystores>> {
+    pub fn keys_clone(&self) -> Arc<RwLock<Keystores<P>>> {
         self.keys.clone()
     }
 
@@ -533,10 +540,10 @@ impl LightWallet {
     }
 }
 
-impl LightWallet {
+impl<P: consensus::Parameters + Send + Sync + 'static> LightWallet<P> {
     pub async fn in_memory_keys<'this>(
         &'this self,
-    ) -> Result<impl std::ops::Deref<Target = InMemoryKeys> + 'this, io::Error> {
+    ) -> Result<impl std::ops::Deref<Target = InMemoryKeys<P>> + 'this, io::Error> {
         let keys = self.keys.read().await;
         tokio::sync::RwLockReadGuard::try_map(keys, |keys| match keys {
             Keystores::Memory(keys) => Some(keys),
@@ -547,7 +554,7 @@ impl LightWallet {
 
     pub async fn in_memory_keys_mut<'this>(
         &'this self,
-    ) -> Result<impl std::ops::DerefMut<Target = InMemoryKeys> + 'this, io::Error> {
+    ) -> Result<impl std::ops::DerefMut<Target = InMemoryKeys<P>> + 'this, io::Error> {
         let keys = self.keys.write().await;
         tokio::sync::RwLockWriteGuard::try_map(keys, |keys| match keys {
             Keystores::Memory(keys) => Some(keys),
@@ -561,13 +568,13 @@ impl LightWallet {
     }
 
     pub fn new(
-        config: LightClientConfig,
+        config: LightClientConfig<P>,
         seed_phrase: Option<String>,
         height: u64,
         num_zaddrs: u32,
     ) -> io::Result<Self> {
         let keys =
-            InMemoryKeys::new(&config, seed_phrase, num_zaddrs).map_err(|e| Error::new(ErrorKind::InvalidData, e))?;
+            InMemoryKeys::<P>::new(&config, seed_phrase, num_zaddrs).map_err(|e| Error::new(ErrorKind::InvalidData, e))?;
 
         Ok(Self {
             keys: Arc::new(RwLock::new(keys.into())),
@@ -582,7 +589,7 @@ impl LightWallet {
         })
     }
 
-    pub async fn read<R: Read>(mut reader: R, config: &LightClientConfig) -> io::Result<Self> {
+    pub async fn read<R: Read>(mut reader: R, config: &LightClientConfig<P>) -> io::Result<Self> {
         let version = reader.read_u64::<LittleEndian>()?;
         if version > Self::serialized_version() {
             let e = format!(
@@ -596,9 +603,9 @@ impl LightWallet {
         info!("Reading wallet version {}", version);
 
         let keys = if version <= 14 {
-            InMemoryKeys::read_old(version, &mut reader, config).map(Into::into)
+            InMemoryKeys::<P>::read_old(version, &mut reader, config).map(Into::into)
         } else if version <= 24 {
-            InMemoryKeys::read(&mut reader, config).map(Into::into)
+            InMemoryKeys::<P>::read(&mut reader, config).map(Into::into)
         } else {
             Keystores::read(&mut reader, config).await
         }?;
@@ -721,7 +728,7 @@ impl LightWallet {
         // in case of rescans etc...
         writer.write_u64::<LittleEndian>(self.get_birthday().await)?;
 
-        Optional::write(&mut writer, &self.verified_tree.read().await.as_ref(), |w, t| {
+        Optional::write(&mut writer, self.verified_tree.read().await.as_ref(), |w, t| {
             use prost::Message;
             let mut buf = vec![];
 
@@ -755,7 +762,7 @@ impl LightWallet {
 
         // Check how much we've selected
         let transparent_value_selected = utxos.iter().fold(Amount::zero(), |prev, utxo| {
-            prev + Amount::from_u64(utxo.value).unwrap()
+            (prev + Amount::from_u64(utxo.value).unwrap()).unwrap()
         });
 
         // If we are allowed only transparent funds or we've selected enough then return
@@ -795,7 +802,7 @@ impl LightWallet {
             let notes = candidate_notes
                 .into_iter()
                 .scan(Amount::zero(), |running_total, spendable| {
-                    if *running_total >= target_amount - transparent_value_selected {
+                    if *running_total >= (target_amount - transparent_value_selected).unwrap() {
                         None
                     } else {
                         *running_total += Amount::from_u64(spendable.note.value).unwrap();
@@ -804,11 +811,11 @@ impl LightWallet {
                 })
                 .collect::<Vec<_>>();
             let sapling_value_selected = notes.iter().fold(Amount::zero(), |prev, sn| {
-                prev + Amount::from_u64(sn.note.value).unwrap()
+                (prev + Amount::from_u64(sn.note.value).unwrap()).unwrap()
             });
 
-            if sapling_value_selected + transparent_value_selected >= target_amount {
-                return (notes, utxos, sapling_value_selected + transparent_value_selected);
+            if (sapling_value_selected + transparent_value_selected).unwrap() >= target_amount {
+                return (notes, utxos, (sapling_value_selected + transparent_value_selected).unwrap());
             }
         }
 
@@ -1112,10 +1119,10 @@ impl LightWallet {
         None
     }
 
-    pub async fn send_to_address<F, Fut, P: TxProver + Send + Sync>(
+    pub async fn send_to_address<F, Fut, Pr: TxProver + Send + Sync>(
         &self,
         consensus_branch_id: u32,
-        prover: P,
+        prover: Pr,
         transparent_only: bool,
         tos: Vec<(&str, u64, Option<String>)>,
         broadcast_fn: F,
@@ -1143,10 +1150,10 @@ impl LightWallet {
         }
     }
 
-    async fn send_to_address_internal<F, Fut, P: TxProver + Send + Sync>(
+    async fn send_to_address_internal<F, Fut, Pr: TxProver + Send + Sync>(
         &self,
         consensus_branch_id: u32,
-        prover: P,
+        prover: Pr,
         transparent_only: bool,
         tos: Vec<(&str, u64, Option<String>)>,
         broadcast_fn: F,
@@ -1193,7 +1200,7 @@ impl LightWallet {
         // Select notes to cover the target value
         println!("{}: Selecting notes", now() - start_time);
 
-        let target_amount = Amount::from_u64(total_value).unwrap() + DEFAULT_FEE;
+        let target_amount = (Amount::from_u64(total_value).unwrap() + DEFAULT_FEE).unwrap();
         let target_height = match self.get_target_height().await {
             Some(h) => BlockHeight::from_u32(h),
             None => return Err("No blocks in wallet to target, please sync first".to_string()),
@@ -1257,13 +1264,13 @@ impl LightWallet {
                     Some(pk) => builder
                         .add_transparent_input(*pk, outpoint.clone(), coin.clone())
                         .map(|_| ())
-                        .map_err(|_| zcash_primitives::transaction::builder::Error::InvalidAddress),
+                        .map_err(|_| zcash_primitives::transaction::builder::Error::InvalidAmount),
                     None => {
                         // Something is very wrong
                         let e = format!("Couldn't find the key for taddr {}", utxo.address);
                         error!("{}", e);
 
-                        Err(zcash_primitives::transaction::builder::Error::InvalidAddress)
+                        Err(zcash_primitives::transaction::builder::Error::InvalidAmount)
                     }
                 }
             })
@@ -1315,7 +1322,7 @@ impl LightWallet {
             if let Err(e) = match to {
                 address::RecipientAddress::Shielded(to) => {
                     total_z_recepients += 1;
-                    builder.add_sapling_output(Some(ovk), to.clone(), value, Some(encoded_memo))
+                    builder.add_sapling_output(Some(ovk), to.clone(), value, encoded_memo)
                 }
                 address::RecipientAddress::Transparent(to) => builder.add_transparent_output(&to, value),
             } {

@@ -6,16 +6,16 @@ use std::convert::TryFrom;
 use std::io::{self, Read, Write};
 use std::usize;
 use zcash_primitives::memo::MemoBytes;
-use zcash_primitives::primitives::SaplingIvk;
+use zcash_primitives::sapling::SaplingIvk;
 
 use crate::blaze::fixed_size_buffer::FixedSizeBuffer;
+use zcash_encoding::{Optional, Vector};
 use zcash_primitives::consensus::BlockHeight;
 use zcash_primitives::{
     memo::Memo,
     merkle_tree::{CommitmentTree, IncrementalWitness},
-    primitives::{Diversifier, Note, Nullifier, Rseed},
     sapling::Node,
-    serialize::{Optional, Vector},
+    sapling::{Diversifier, Note, Nullifier, Rseed},
     transaction::{components::OutPoint, TxId},
     zip32::ExtendedFullViewingKey,
 };

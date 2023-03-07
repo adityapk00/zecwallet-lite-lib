@@ -21,11 +21,10 @@ use zcash_primitives::{
     legacy::{Script, TransparentAddress},
     memo::Memo,
     merkle_tree::{CommitmentTree, Hashable, IncrementalWitness, MerklePath},
-    note_encryption::SaplingNoteEncryption,
-    primitives::{Diversifier, Note, Nullifier, PaymentAddress, ProofGenerationKey, Rseed, ValueCommitment},
     prover::TxProver,
     redjubjub::Signature,
-    sapling::Node,
+    sapling::note_encryption::SaplingNoteEncryption,
+    sapling::{Diversifier, Node, Note, Nullifier, PaymentAddress, ProofGenerationKey, Rseed, ValueCommitment},
     transaction::{
         components::{Amount, OutPoint, OutputDescription, TxIn, TxOut, GROTH_PROOF_SIZE},
         Transaction, TransactionData, TxId,
