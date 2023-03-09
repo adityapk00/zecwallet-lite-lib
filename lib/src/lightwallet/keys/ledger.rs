@@ -685,6 +685,7 @@ pub struct LedgerBuilder<'k, P: Parameters> {
     params: P,
     target_height: BlockHeight,
     inner: ZBuilder,
+    progress_notifier: Option<mpsc::Sender<usize>>,
 }
 
 impl<'a, P: Parameters> LedgerBuilder<'a, P> {
@@ -694,6 +695,7 @@ impl<'a, P: Parameters> LedgerBuilder<'a, P> {
             params,
             target_height,
             inner: ZBuilder::new(),
+            progress_notifier: None,
         }
     }
 
@@ -775,11 +777,14 @@ impl<'a, P: Parameters + Send + Sync> Builder for LedgerBuilder<'a, P> {
         self
     }
 
-    async fn build<TX: TxProver + Send + Sync>(
-        self,
+    fn with_progress_notifier(&mut self, progress_notifier: Option<mpsc::Sender<usize>>) {
+        self.progress_notifier = progress_notifier;
+    }
+
+    async fn build(
+        mut self,
         consensus_branch_id: BranchId,
-        prover: &TX,
-        progress: Option<mpsc::Sender<usize>>,
+        prover: &(impl TxProver + Send + Sync),
     ) -> Result<(Transaction, SaplingMetadata), Self::Error> {
         let tx = self
             .inner
@@ -791,7 +796,7 @@ impl<'a, P: Parameters + Send + Sync> Builder for LedgerBuilder<'a, P> {
                 &mut OsRng,
                 self.target_height.into(),
                 consensus_branch_id,
-                progress,
+                self.progress_notifier,
             )
             .await?;
 

@@ -209,7 +209,7 @@ impl WalletTKey {
         Optional::write(&mut out, self.key, |w, sk| w.write_all(&sk[..]))?;
         utils::write_string(&mut out, &self.address)?;
 
-        Optional::write(&mut out, self.hdkey_num, |o, n| o.write_u32::<LittleEndian>(*n))?;
+        Optional::write(&mut out, self.hdkey_num, |o, n| o.write_u32::<LittleEndian>(n))?;
 
         // Write enc_key
         Optional::write(&mut out, self.enc_key.as_ref(), |o, v| {

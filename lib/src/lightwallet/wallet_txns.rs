@@ -108,7 +108,7 @@ impl WalletTxns {
             txns.sort_by(|a, b| a.0.partial_cmp(b.0).unwrap());
 
             Vector::write(&mut writer, &txns, |w, (k, v)| {
-                w.write_all(&k.0)?;
+                w.write_all(k.as_ref())?;
                 v.write(w)
             })?;
         }

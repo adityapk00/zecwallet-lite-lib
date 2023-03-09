@@ -7,10 +7,16 @@ use async_trait::async_trait;
 use derive_more::From;
 use jubjub::AffinePoint;
 use secp256k1::PublicKey as SecpPublicKey;
+use group::GroupEncoding;
 use thiserror::Error;
 use tokio::sync::mpsc;
 use zcash_client_backend::encoding::encode_payment_address;
-use zcash_primitives::{consensus::{BlockHeight, BranchId, Network, Parameters}, keys::OutgoingViewingKey, legacy::TransparentAddress, sapling::{Note, Nullifier, PaymentAddress, SaplingIvk}, transaction::Transaction};
+use zcash_primitives::{consensus::{BlockHeight, Network, Parameters},
+                       keys::OutgoingViewingKey,
+                       legacy::TransparentAddress,
+                       sapling::{Note, Nullifier, PaymentAddress, SaplingIvk}};
+use zcash_primitives::consensus::BranchId;
+use zcash_primitives::transaction::Transaction;
 
 use crate::{
     lightclient::lightclient_config::LightClientConfig,
@@ -530,16 +536,23 @@ impl<'ks, P: Parameters + Send + Sync> Builder for Builders<'ks, P> {
         self
     }
 
-    async fn build<TX: TxProver + Send + Sync>(
-        self,
-        consensus: BranchId,
-        prover: &TX,
-        progress: Option<mpsc::Sender<usize>>,
-    ) -> Result<(Transaction, SaplingMetadata), Self::Error> {
+    fn with_progress_notifier(&mut self, progress_notifier: Option<mpsc::Sender<usize>>) {
         match self {
-            Self::Memory(this) => this.build(consensus, prover, progress).await.map_err(Into::into),
+            Self::Memory(this) => this.with_progress_notifier(progress_notifier),
             #[cfg(feature = "ledger-support")]
-            Self::Ledger(this) => this.build(consensus, prover, progress).await.map_err(Into::into),
+            Self::Ledger(this) => this.with_progress_notifier(progress_notifier),
+        }
+    }
+
+    async fn build(
+        mut self,
+        consensus: BranchId,
+        prover: &(impl TxProver + Send + Sync),
+    )  -> Result<(Transaction, SaplingMetadata), Self::Error> {
+        match self {
+            Self::Memory(this) => this.build(consensus, prover).await.map_err(Into::into),
+            #[cfg(feature = "ledger-support")]
+            Self::Ledger(this) => this.build(consensus,  prover).await.map_err(Into::into),
         }
     }
 }

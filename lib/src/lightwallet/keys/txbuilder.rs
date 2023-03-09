@@ -72,14 +72,21 @@ pub trait Builder {
 
     fn send_change_to(&mut self, ovk: OutgoingViewingKey, to: PaymentAddress) -> &mut Self;
 
+    /// Sets the notifier channel, where progress of building the transaction is sent.
+    ///
+    /// An update is sent after every Spend or Output is computed, and the `u32` sent
+    /// represents the total steps completed so far. It will eventually send number of
+    /// spends + outputs. If there's an error building the transaction, the channel is
+    /// closed.
+    fn with_progress_notifier(&mut self, progress_notifier: Option<mpsc::Sender<usize>>);
+
     /// This will take care of building the transaction with the inputs given so far
     ///
     /// The `progress` is an optional argument for a mpsc channel to allow the builder
     /// to send the number of items processed so far
-    async fn build<TX: TxProver + Send + Sync>(
-        self,
-        consensus_branch_id: BranchId,
-        prover: &TX,
-        progress: Option<mpsc::Sender<usize>>,
-    ) -> Result<(Transaction, SaplingMetadata), Self::Error>;
+    async fn build(
+        mut self,
+        consensus: BranchId,
+        prover: &(impl TxProver + Send + Sync),
+    ) -> Result<(Transaction, SaplingMetadata), Self::Error> ;
 }

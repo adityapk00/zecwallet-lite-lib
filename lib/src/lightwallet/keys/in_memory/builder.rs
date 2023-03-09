@@ -2,7 +2,7 @@ use rand::rngs::OsRng;
 use secp256k1::PublicKey as SecpPublicKey;
 use tokio::sync::mpsc;
 use zcash_primitives::{
-    consensus::{BlockHeight, BranchId, Parameters},
+    consensus::{BlockHeight, Parameters},
     keys::OutgoingViewingKey,
     legacy::TransparentAddress,
     memo::MemoBytes,
@@ -14,6 +14,7 @@ use zcash_primitives::{
         Transaction,
     },
 };
+use zcash_primitives::consensus::BranchId;
 
 use crate::lightwallet::{
     keys::{
@@ -81,7 +82,7 @@ impl<'a, P: Parameters + Send + Sync> Builder for InMemoryBuilder<'a, P> {
         value: Amount,
         memo: Option<MemoBytes>,
     ) -> Result<&mut Self, Self::Error> {
-        self.inner.add_sapling_output(ovk, to, value, memo)?;
+        self.inner.add_sapling_output(ovk, to, value, memo.unwrap())?;
         Ok(self)
     }
 
@@ -115,19 +116,14 @@ impl<'a, P: Parameters + Send + Sync> Builder for InMemoryBuilder<'a, P> {
         self
     }
 
-    async fn build<TX: TxProver + Send + Sync>(
-        self,
-        consensus_branch_id: BranchId,
-        prover: &TX,
-        progress: Option<mpsc::Sender<usize>>,
-    ) -> Result<(Transaction, SaplingMetadata), Self::Error> {
-        let progress = if let Some(progress) = progress {
+    fn with_progress_notifier(&mut self, progress_notifier: Option<mpsc::Sender<usize>>) {
+        let progress_notifier = if let Some(progress_notifier) = progress_notifier {
             //wrap given channel with the one expected by the builder
             let (tx, rx) = std::sync::mpsc::channel();
             tokio::task::spawn_blocking(move || {
                 while let Ok(num) = rx.recv() {
-                    let progress = progress.clone();
-                    let _ = tokio::spawn(async move { progress.send(num as usize).await });
+                    let progress_notifier = progress_notifier.clone();
+                    let _ = tokio::spawn(async move { progress_notifier.send(num as usize).await });
                 }
             });
 
@@ -135,9 +131,16 @@ impl<'a, P: Parameters + Send + Sync> Builder for InMemoryBuilder<'a, P> {
         } else {
             None
         };
+        self.inner.with_progress_notifier(progress_notifier.unwrap());
+    }
 
+    async fn build(
+        mut self,
+        _: BranchId,
+        prover: &(impl TxProver + Send + Sync),
+    ) -> Result<(Transaction, SaplingMetadata), Self::Error> {
         self.inner
-            .build_with_progress_notifier(consensus_branch_id, prover, progress)
+            .build(prover)
             .map(|(tx, meta)| (tx, meta.into()))
             .map_err(Into::into)
     }

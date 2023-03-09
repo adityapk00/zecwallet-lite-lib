@@ -16,18 +16,19 @@ use log::{error, info, warn};
 use std::{
     cmp,
     collections::HashMap,
-    convert::TryFrom,
     io::{self, Error, ErrorKind, Read, Write},
-    sync::{atomic::AtomicU64, Arc},
+    sync::{atomic::AtomicU64, Arc, mpsc},
     time::SystemTime,
 };
+use std::convert::TryFrom;
 use tokio::sync::RwLock;
 use zcash_client_backend::{
     address,
     encoding::{decode_extended_full_viewing_key, decode_extended_spending_key, encode_payment_address},
 };
 use zcash_encoding::{Optional, Vector};
-use zcash_primitives::{consensus::{BlockHeight, BranchId}, consensus, legacy::Script, memo::Memo, transaction::components::{amount::DEFAULT_FEE, Amount, OutPoint, TxOut}, zip32::ExtendedFullViewingKey};
+use zcash_primitives::{consensus::BlockHeight, consensus, legacy::Script, memo::Memo, transaction::components::{amount::DEFAULT_FEE, Amount, OutPoint, TxOut}, zip32::ExtendedFullViewingKey};
+use zcash_primitives::consensus::BranchId;
 
 use self::{
     data::{BlockData, SaplingNoteData, Utxo, WalletZecPriceInfo},
@@ -1244,9 +1245,11 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightWallet<P> {
             notes.len(),
             utxos.len()
         );
+        let (progress_notifier, progress_notifier_rx) = mpsc::channel();
 
         let mut keys = self.keys.write().await;
         let mut builder = keys.tx_builder(target_height);
+        builder.with_progress_notifier( Some(progress_notifier));
 
         let secp = secp256k1::Secp256k1::signing_only();
         // Add all tinputs
@@ -1355,7 +1358,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightWallet<P> {
 
         println!("{}: Building transaction", now() - start_time);
         let (tx, _) = match builder
-            .build(BranchId::try_from(consensus_branch_id).unwrap(), &prover, Some(tx))
+            .build(BranchId::try_from(consensus_branch_id).unwrap(), &prover)
             .await
         {
             Ok(res) => {

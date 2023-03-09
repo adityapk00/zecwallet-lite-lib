@@ -7,6 +7,7 @@ use std::{
     convert::TryInto,
     io::{self, ErrorKind, Read},
 };
+use jubjub::ExtendedPoint;
 use zcash_primitives::{
     consensus::{BlockHeight, MAIN_NETWORK},
     keys::OutgoingViewingKey,
@@ -15,7 +16,8 @@ use zcash_primitives::{
     sapling::{PaymentAddress, Rseed, SaplingIvk, ValueCommitment},
 };
 
-use zcash_note_encryption::{NoteEncryption, OutgoingCipherKey, ENC_CIPHERTEXT_SIZE, OUT_CIPHERTEXT_SIZE};
+use zcash_note_encryption::{NoteEncryption, OutgoingCipherKey, ENC_CIPHERTEXT_SIZE, OUT_CIPHERTEXT_SIZE, EphemeralKeyBytes};
+use zcash_primitives::transaction::components::{GROTH_PROOF_SIZE, OutputDescription};
 
 pub struct Message {
     pub to: PaymentAddress,
@@ -72,24 +74,24 @@ impl Message {
         let cmu = note.cmu();
 
         // Create the note encrytion object
-        let mut ne = NoteEncryption::new(ovk, note, self.to.clone(), self.memo.clone().into(), &mut rng);
+        let mut ne = NoteEncryption::new(ovk, note, self.to.clone(), self.memo.clone().into());
 
         // EPK, which needs to be sent to the reciever.
-        let epk = ne.epk().clone().into();
+        let epk = EphemeralKeyBytes::from(ne.epk().to_bytes());
 
         // enc_ciphertext is the encrypted note, out_ciphertext is the outgoing cipher text that the
         // sender can recover
         let enc_ciphertext = ne.encrypt_note_plaintext();
-        let out_ciphertext = ne.encrypt_outgoing_plaintext(&cv, &cmu);
+        let out_ciphertext = ne.encrypt_outgoing_plaintext(&cv, &cmu, &mut rng);
 
         // OCK is used to recover outgoing encrypted notes
         let ock = if ovk.is_some() {
-            Some(prf_ock(&ovk.unwrap(), &cv, &cmu, &epk))
+            Some(prf_ock(&ovk.unwrap(), &cv, &cmu.to_bytes(), &epk))
         } else {
             None
         };
 
-        Ok((ock, cv, cmu, epk, enc_ciphertext, out_ciphertext))
+        Ok((ock, cv, cmu, *ne.epk(), enc_ciphertext, out_ciphertext))
     }
 
     pub fn encrypt(&self) -> Result<Vec<u8>, String> {
@@ -169,9 +171,14 @@ impl Message {
             &MAIN_NETWORK,
             BlockHeight::from_u32(1_000_000),
             &ivk,
-            &epk.unwrap(),
-            &cmu.unwrap(),
-            &enc_bytes,
+            &OutputDescription {
+                cmu: cmu.unwrap(),
+                ephemeral_key: EphemeralKeyBytes::from(epk_bytes),
+                enc_ciphertext: enc_bytes,
+                cv: ExtendedPoint::identity(),
+                out_ciphertext: [0u8; 80],
+                zkproof: [0; GROTH_PROOF_SIZE],
+            },
         ) {
             Some((_note, address, memo)) => Ok(Self::new(
                 address,
