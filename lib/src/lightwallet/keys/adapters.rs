@@ -177,7 +177,7 @@ impl <P: consensus::Parameters + Send + Sync+ 'static>Keystores<P> {
     }
 
     /// Retrieve all known ZAddrs in the keystore
-    pub async fn get_all_zaddresses(&self) -> impl Iterator<Item = String> {
+    pub async fn get_all_zaddresses(&self) -> impl Iterator<Item = String> + '_  {
         //see comment inside `get_all_ivks`
 
         let (memory, ledger) = match self {
@@ -190,7 +190,7 @@ impl <P: consensus::Parameters + Send + Sync+ 'static>Keystores<P> {
     }
 
     /// Retrieve all ZAddrs in the keystore which we have the spending key for
-    pub async fn get_all_spendable_zaddresses(&self) -> impl Iterator<Item = String> {
+    pub async fn get_all_spendable_zaddresses(&self) -> impl Iterator<Item = String> + '_{
         //see comment inside `get_all_ivks`
 
         let (memory, ledger) = match self {
@@ -265,21 +265,21 @@ impl <P: consensus::Parameters + Send + Sync+ 'static>Keystores<P> {
 
     /// Perform bech32 encoding of the given address
     pub fn encode_zaddr(&self, addr: PaymentAddress) -> String {
-        let hrp = match self {
-            Self::Memory(this) => this.config().hrp_sapling_address(),
+        let config = match self {
+            Keystores::Memory(this) => this.config(),
             #[cfg(feature = "ledger-support")]
-            Self::Ledger(this) => this.config.hrp_sapling_address(),
+            Keystores::Ledger(this) => this.config(),
         };
-
+        let hrp = config.hrp_sapling_address();
         encode_payment_address(hrp, &addr)
     }
 
     /// Compute the transparent address of a pubkey hash
     pub fn address_from_pubkeyhash(&self, addr: Option<TransparentAddress>) -> Option<String> {
         let prefix = match self {
-            Self::Memory(this) => this.config().base58_pubkey_address(),
+            Keystores::Memory(this) => this.config().base58_pubkey_address(),
             #[cfg(feature = "ledger-support")]
-            Self::Ledger(this) => this.config.base58_pubkey_address(),
+            Keystores::Ledger(this) => this.config.base58_pubkey_address(),
         };
 
         match addr {
@@ -295,9 +295,9 @@ impl <P: consensus::Parameters + Send + Sync+ 'static>Keystores<P> {
     /// This is for the transparent addresses
     pub async fn ensure_hd_taddresses(&mut self, addr: &str) {
         match self {
-            Self::Memory(this) => this.ensure_hd_taddresses(addr),
+            Keystores::Memory(this) => this.ensure_hd_taddresses(addr),
             #[cfg(feature = "ledger-support")]
-            Self::Ledger(this) => this.ensure_hd_taddresses(addr).await,
+            Keystores::Ledger(this) => this.ensure_hd_taddresses(addr).await,
         }
     }
 

@@ -304,7 +304,7 @@ impl SaplingNoteData {
             let spent = Optional::read(&mut reader, |r| {
                 let mut txid_bytes = [0u8; 32];
                 r.read_exact(&mut txid_bytes)?;
-                Ok(TxId { 0: txid_bytes })
+                Ok(TxId::from_bytes(txid_bytes))
             })?;
 
             let spent_at_height = if version >= 2 {
@@ -323,7 +323,7 @@ impl SaplingNoteData {
                 let mut txid_bytes = [0u8; 32];
                 r.read_exact(&mut txid_bytes)?;
                 let height = r.read_u32::<LittleEndian>()?;
-                Ok((TxId { 0: txid_bytes }, height))
+                Ok((TxId::from_bytes(txid_bytes), height))
             })?
         };
 
@@ -335,7 +335,7 @@ impl SaplingNoteData {
                 r.read_exact(&mut txbytes)?;
 
                 let height = r.read_u32::<LittleEndian>()?;
-                Ok((TxId { 0: txbytes }, height))
+                Ok((TxId::from_bytes(txbytes), height))
             })?
         };
 
@@ -459,7 +459,7 @@ impl Utxo {
 
         let mut txid_bytes = [0; 32];
         reader.read_exact(&mut txid_bytes)?;
-        let txid = TxId { 0: txid_bytes };
+        let txid = TxId::from_bytes(txid_bytes);
 
         let output_index = reader.read_u64::<LittleEndian>()?;
         let value = reader.read_u64::<LittleEndian>()?;
@@ -474,7 +474,7 @@ impl Utxo {
         let spent = Optional::read(&mut reader, |r| {
             let mut txbytes = [0u8; 32];
             r.read_exact(&mut txbytes)?;
-            Ok(TxId { 0: txbytes })
+            Ok(TxId::from_bytes(txbytes))
         })?;
 
         let spent_at_height = if version <= 1 {
@@ -491,7 +491,7 @@ impl Utxo {
                 r.read_exact(&mut txbytes)?;
 
                 let height = r.read_u32::<LittleEndian>()?;
-                Ok((TxId { 0: txbytes }, height))
+                Ok((TxId::from_bytes(txbytes), height))
             })?
         };
 
@@ -626,7 +626,7 @@ impl WalletTx {
     pub fn new_txid(txid: &Vec<u8>) -> TxId {
         let mut txid_bytes = [0u8; 32];
         txid_bytes.copy_from_slice(txid);
-        TxId { 0: txid_bytes }
+        TxId::from_bytes(txid_bytes)
     }
 
     pub fn get_price(datetime: u64, price: &WalletZecPriceInfo) -> Option<f64> {
@@ -677,7 +677,7 @@ impl WalletTx {
         let mut txid_bytes = [0u8; 32];
         reader.read_exact(&mut txid_bytes)?;
 
-        let txid = TxId { 0: txid_bytes };
+        let txid = TxId::from_bytes(txid_bytes);
 
         let notes = Vector::read(&mut reader, |r| SaplingNoteData::read(r))?;
         let utxos = Vector::read(&mut reader, |r| Utxo::read(r))?;

@@ -1251,7 +1251,6 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightWallet<P> {
         let mut builder = keys.tx_builder(target_height);
         builder.with_progress_notifier( Some(progress_notifier));
 
-        let secp = secp256k1::Secp256k1::signing_only();
         // Add all tinputs
         utxos
             .iter()

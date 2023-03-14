@@ -284,11 +284,11 @@ impl<P: consensus::Parameters + Send + Sync + 'static> FetchFullTxns<P> {
         let mut outgoing_metadatas = vec![];
         if let Some(s_bundle) = tx.sapling_bundle() {
             for output in s_bundle.shielded_outputs.iter() {
-                let cmu = output.cmu;
-                let ct = output.enc_ciphertext;
+                //let cmu = output.cmu;
+                //let ct = output.enc_ciphertext;
 
                 // Search all of our keys
-                for (i, ivk) in ivks.iter().enumerate() {
+                for (_, ivk) in ivks.iter().enumerate() {
                     let (note, to, memo_bytes) =
                         match try_sapling_note_decryption(&config.get_params(), height, &ivk, output) {
                             Some(ret) => ret,

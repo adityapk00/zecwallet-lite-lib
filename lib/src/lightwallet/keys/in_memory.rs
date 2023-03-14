@@ -794,7 +794,7 @@ impl<P: consensus::Parameters + Send + Sync+ 'static> InMemoryKeys<P> {
 #[derive(Debug)]
 pub enum InMemoryKeysError {
     WalletLocked,
-    UnableToGetDefaultZAddr,
+    //UnableToGetDefaultZAddr,
 }
 
 #[async_trait::async_trait]

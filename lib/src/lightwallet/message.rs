@@ -75,7 +75,7 @@ impl Message {
         let cmu = note.cmu();
 
         // Create the note encrytion object
-        let mut ne = NoteEncryption::<SaplingDomain<zcash_primitives::consensus::Network>>::new(ovk, note, self.to.clone(), self.memo.clone().into());
+        let ne = NoteEncryption::<SaplingDomain<zcash_primitives::consensus::Network>>::new(ovk, note, self.to.clone(), self.memo.clone().into());
 
         // EPK, which needs to be sent to the reciever.
         let epk = EphemeralKeyBytes::from(ne.epk().to_bytes());

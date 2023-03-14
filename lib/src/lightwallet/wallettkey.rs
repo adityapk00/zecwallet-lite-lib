@@ -108,7 +108,7 @@ impl WalletTKey {
     }
 
     pub fn new_hdkey(base58_pubkey_addr_prefix: &[u8; 2], hdkey_num: u32, sk: secp256k1::SecretKey) -> Self {
-        let pos = hdkey_num;
+        let _pos = hdkey_num;
 
         let address = Self::address_from_prefix_sk(base58_pubkey_addr_prefix, &sk);
 

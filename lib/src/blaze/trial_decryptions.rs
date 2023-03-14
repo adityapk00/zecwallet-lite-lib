@@ -120,12 +120,14 @@ impl<P: consensus::Parameters + Send + Sync + 'static> TrialDecryptions<P> {
                 let mut wallet_tx = false;
 
                 for (output_num, co) in ctx.outputs.iter().enumerate() {
+                    /*
                     let cmu = co.cmu().map_err(|_| "No CMU".to_string())?;
                     let epk = match co.epk() {
                         Err(_) => continue,
                         Ok(epk) => epk,
                     };
-                    for (i, ivk) in ivks.iter().map(|k| SaplingIvk(k.0)).enumerate() {
+                     */
+                    for (_, ivk) in ivks.iter().map(|k| SaplingIvk(k.0)).enumerate() {
 /*                        let co_desc = CompactOutputDescription {
                             cmu: *co.cmu()?,
                             ephemeral_key: *co.epk()?,

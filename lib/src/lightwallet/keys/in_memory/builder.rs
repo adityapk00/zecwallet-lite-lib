@@ -51,7 +51,7 @@ impl<'a, P: Parameters> InMemoryBuilder<'a, P> {
 }
 
 #[async_trait::async_trait]
-impl<'a, P: Parameters + Send + Sync> Builder for InMemoryBuilder<'a, P> {
+impl<'a, P: Parameters + Send + Sync + 'static> Builder for InMemoryBuilder<'a, P> {
     type Error = BuilderError;
 
     fn add_sapling_spend(

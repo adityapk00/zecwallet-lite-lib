@@ -432,6 +432,11 @@ impl <P: consensus::Parameters + Send + Sync+ 'static> LedgerKeystore<P> {
             Err(e) => format!("Error: {:?}", e),
         }
     }
+
+
+    pub fn config(&self) -> LightClientConfig<P> {
+        self.config.clone()
+    }
 }
 
 //serialization and deserialization stuff
