@@ -1529,6 +1529,7 @@ dependencies = [
 [[package]]
 name = "ledger-zcash"
 version = "0.6.0"
+source = "git+https://github.com/Zondax/ledger-zcash-rs?branch=ledger-v5#5bb4e0a14cfc12495143c4609bdd096d62f41b5f"
 dependencies = [
  "arrayvec",
  "byteorder",
@@ -3881,6 +3882,7 @@ dependencies = [
 [[package]]
 name = "zcash-hsmbuilder"
 version = "0.4.0"
+source = "git+https://github.com/Zondax/ledger-zcash-rs?branch=ledger-v5#5bb4e0a14cfc12495143c4609bdd096d62f41b5f"
 dependencies = [
  "bellman",
  "blake2b_simd",
