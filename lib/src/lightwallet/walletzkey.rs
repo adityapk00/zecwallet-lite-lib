@@ -199,7 +199,7 @@ impl WalletZKey {
         Ok(())
     }
 
-    pub fn unlock<P: consensus::Parameters>(
+    pub fn unlock<P: consensus::Parameters + Send + Sync+ 'static>(
         &mut self, config: &LightClientConfig<P>,
         bip39_seed: &[u8],
         key: &secretbox::Key,

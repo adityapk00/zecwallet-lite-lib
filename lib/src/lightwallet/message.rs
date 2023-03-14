@@ -17,6 +17,7 @@ use zcash_primitives::{
 };
 
 use zcash_note_encryption::{NoteEncryption, OutgoingCipherKey, ENC_CIPHERTEXT_SIZE, OUT_CIPHERTEXT_SIZE, EphemeralKeyBytes};
+use zcash_primitives::sapling::note_encryption::SaplingDomain;
 use zcash_primitives::transaction::components::{GROTH_PROOF_SIZE, OutputDescription};
 
 pub struct Message {
@@ -74,7 +75,7 @@ impl Message {
         let cmu = note.cmu();
 
         // Create the note encrytion object
-        let mut ne = NoteEncryption::new(ovk, note, self.to.clone(), self.memo.clone().into());
+        let mut ne = NoteEncryption::<SaplingDomain<zcash_primitives::consensus::Network>>::new(ovk, note, self.to.clone(), self.memo.clone().into());
 
         // EPK, which needs to be sent to the reciever.
         let epk = EphemeralKeyBytes::from(ne.epk().to_bytes());

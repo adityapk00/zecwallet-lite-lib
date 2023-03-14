@@ -1,6 +1,6 @@
 use rand::rngs::OsRng;
 use secp256k1::PublicKey as SecpPublicKey;
-use tokio::sync::mpsc;
+use std::sync::mpsc;
 use zcash_primitives::{
     consensus::{BlockHeight, Parameters},
     keys::OutgoingViewingKey,
@@ -15,6 +15,7 @@ use zcash_primitives::{
     },
 };
 use zcash_primitives::consensus::BranchId;
+use zcash_primitives::transaction::builder::Progress;
 
 use crate::lightwallet::{
     keys::{
@@ -116,14 +117,14 @@ impl<'a, P: Parameters + Send + Sync> Builder for InMemoryBuilder<'a, P> {
         self
     }
 
-    fn with_progress_notifier(&mut self, progress_notifier: Option<mpsc::Sender<usize>>) {
+    fn with_progress_notifier(&mut self, progress_notifier: Option<mpsc::Sender<Progress>>) {
         let progress_notifier = if let Some(progress_notifier) = progress_notifier {
             //wrap given channel with the one expected by the builder
-            let (tx, rx) = std::sync::mpsc::channel();
+            let (tx, rx) = mpsc::channel();
             tokio::task::spawn_blocking(move || {
                 while let Ok(num) = rx.recv() {
                     let progress_notifier = progress_notifier.clone();
-                    let _ = tokio::spawn(async move { progress_notifier.send(num as usize).await });
+                    let _ = tokio::spawn(async move { progress_notifier.send(num) });
                 }
             });
 

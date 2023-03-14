@@ -9,13 +9,11 @@ use jubjub::AffinePoint;
 use secp256k1::PublicKey as SecpPublicKey;
 use group::GroupEncoding;
 use thiserror::Error;
-use tokio::sync::mpsc;
+use std::sync::mpsc;
 use zcash_client_backend::encoding::encode_payment_address;
-use zcash_primitives::{consensus::{BlockHeight, Network, Parameters},
-                       keys::OutgoingViewingKey,
-                       legacy::TransparentAddress,
-                       sapling::{Note, Nullifier, PaymentAddress, SaplingIvk}};
+use zcash_primitives::{consensus::{BlockHeight, Parameters}, consensus, keys::OutgoingViewingKey, legacy::TransparentAddress, sapling::{Note, Nullifier, PaymentAddress, SaplingIvk}};
 use zcash_primitives::consensus::BranchId;
+use zcash_primitives::transaction::builder::Progress;
 use zcash_primitives::transaction::Transaction;
 
 use crate::{
@@ -109,7 +107,7 @@ impl <P: Parameters> Keystores<P> {
     }
 }
 
-impl <P: Parameters>Keystores<P> {
+impl <P: consensus::Parameters + Send + Sync+ 'static>Keystores<P> {
     pub fn as_kind(&self) -> KeystoresKind {
         match self {
             Self::Memory(_) => KeystoresKind::Memory,
@@ -240,7 +238,7 @@ impl <P: Parameters>Keystores<P> {
     }
 
     /// Retrieve the transaction builder for the keystore
-    pub fn tx_builder(&mut self, target_height: BlockHeight) -> Builders<'_, Network> {
+    pub fn tx_builder(&mut self, target_height: BlockHeight) -> Builders<'_, P> {
         match self {
             Self::Memory(this) => this.txbuilder(target_height).expect("infallible").into(),
             #[cfg(feature = "ledger-support")]
@@ -405,7 +403,7 @@ impl <P: Parameters>Keystores<P> {
 }
 
 //serialization stuff
-impl <P: Parameters>Keystores<P> {
+impl <P: Parameters + Send + Sync + 'static>Keystores<P> {
     /// Indicates whether the keystore is ready to be saved to file
     pub fn writable(&self) -> bool {
         match self {
@@ -450,7 +448,7 @@ impl <P: Parameters>Keystores<P> {
 }
 
 #[async_trait]
-impl<'ks, P: Parameters + Send + Sync> Builder for Builders<'ks, P> {
+impl<'ks, P: Parameters + Send + Sync + 'static> Builder for Builders<'ks, P> {
     type Error = BuildersError;
 
     fn add_sapling_spend(
@@ -536,7 +534,7 @@ impl<'ks, P: Parameters + Send + Sync> Builder for Builders<'ks, P> {
         self
     }
 
-    fn with_progress_notifier(&mut self, progress_notifier: Option<mpsc::Sender<usize>>) {
+    fn with_progress_notifier(&mut self, progress_notifier: Option<mpsc::Sender<Progress>>) {
         match self {
             Self::Memory(this) => this.with_progress_notifier(progress_notifier),
             #[cfg(feature = "ledger-support")]

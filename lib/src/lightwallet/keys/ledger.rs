@@ -9,12 +9,14 @@ use ledger_zcash::{
 };
 use rand::rngs::OsRng;
 use secp256k1::PublicKey as SecpPublicKey;
-use tokio::sync::{mpsc, RwLock};
+use std::sync::mpsc;
+use tokio::sync:: RwLock;
 use zcash_client_backend::encoding::encode_payment_address;
-use zcash_primitives::{consensus::{BlockHeight, BranchId, Network, Parameters}, consensus, keys::OutgoingViewingKey, legacy::TransparentAddress, memo::MemoBytes, merkle_tree::MerklePath, sapling::{Diversifier, Node, Note, Nullifier, PaymentAddress, SaplingIvk}, transaction::{
+use zcash_primitives::{consensus::{BlockHeight, BranchId, Parameters}, consensus, keys::OutgoingViewingKey, legacy::TransparentAddress, memo::MemoBytes, merkle_tree::MerklePath, sapling::{Diversifier, Node, Note, Nullifier, PaymentAddress, SaplingIvk}, transaction::{
     components::{amount::DEFAULT_FEE, Amount, OutPoint, TxOut},
     Transaction,
 }, zip32::{ChildIndex, DiversifierIndex}};
+use zcash_primitives::transaction::builder::Progress;
 use zx_bip44::BIP44Path;
 
 use crate::{
@@ -200,7 +202,7 @@ impl <P: consensus::Parameters> LedgerKeystore<P> {
     }
 
     /// Retrieve all the cached/known ZAddrs
-    pub async fn get_all_zaddresses(&self) -> impl Iterator<Item = String> {
+    pub async fn get_all_zaddresses(&self) -> impl Iterator<Item = String>+ '_  {
         let hrp = self.config.hrp_sapling_address();
 
         self.get_all_ivks()
@@ -275,7 +277,7 @@ impl <P: consensus::Parameters> LedgerKeystore<P> {
 }
 
 //in-memory keystore compatibility methods
-impl <P: consensus::Parameters> LedgerKeystore<P> {
+impl <P: consensus::Parameters + Send + Sync+ 'static> LedgerKeystore<P> {
     /// Retrieve the OVK of a given path
     pub async fn get_ovk_of(&self, path: &[u32; 3]) -> Option<OutgoingViewingKey> {
         self.shielded_addrs
@@ -433,7 +435,7 @@ impl <P: consensus::Parameters> LedgerKeystore<P> {
 }
 
 //serialization and deserialization stuff
-impl <P: consensus::Parameters> LedgerKeystore<P> {
+impl <P: consensus::Parameters +'static> LedgerKeystore<P> {
     /// Keystore version
     ///
     /// Increase for any change in the format
@@ -604,14 +606,15 @@ impl <P: consensus::Parameters> LedgerKeystore<P> {
 }
 
 #[async_trait]
-impl <P: consensus::Parameters> Keystore for LedgerKeystore<P> {
+impl <P: Parameters + Send + Sync + 'static> Keystore for LedgerKeystore<P> {
     type Error = LedgerError;
 
     async fn get_t_pubkey(&self, path: &[ChildIndex]) -> Result<SecpPublicKey, Self::Error> {
         let path = Self::path_slice_to_bip44(path)?;
         //avoid keeping the read guard so we can get the write guard later if necessary
         // without causing a deadlock
-        let cached = self.transparent_addrs.read().await.get(&path.0).map(|k| k.clone());
+        let cached = self.transparent_addrs.read().await;
+        let cached = cached.get(&path.0).map(|k| k.clone());
 
         match cached {
             Some(key) => Ok(key),
@@ -676,8 +679,8 @@ impl <P: consensus::Parameters> Keystore for LedgerKeystore<P> {
     }
 }
 
-impl<'this,P: Parameters> KeystoreBuilderLifetime<'this> for LedgerKeystore<P> {
-    type Builder = LedgerBuilder<'this, Network>;
+impl<'this,P: Parameters + Send + Sync> KeystoreBuilderLifetime<'this> for LedgerKeystore<P> {
+    type Builder = LedgerBuilder<'this, P>;
 }
 
 pub struct LedgerBuilder<'k, P: Parameters> {
@@ -685,7 +688,7 @@ pub struct LedgerBuilder<'k, P: Parameters> {
     params: P,
     target_height: BlockHeight,
     inner: ZBuilder,
-    progress_notifier: Option<mpsc::Sender<usize>>,
+    progress_notifier: Option<mpsc::Sender<Progress>>,
 }
 
 impl<'a, P: Parameters> LedgerBuilder<'a, P> {
@@ -777,7 +780,7 @@ impl<'a, P: Parameters + Send + Sync> Builder for LedgerBuilder<'a, P> {
         self
     }
 
-    fn with_progress_notifier(&mut self, progress_notifier: Option<mpsc::Sender<usize>>) {
+    fn with_progress_notifier(&mut self, progress_notifier: Option<mpsc::Sender<Progress>>) {
         self.progress_notifier = progress_notifier;
     }
 

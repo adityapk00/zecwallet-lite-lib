@@ -40,7 +40,7 @@ pub struct WalletTKey {
 }
 
 impl WalletTKey {
-    pub fn get_taddr_from_bip39seed<P: consensus::Parameters>(config: &LightClientConfig<P>, bip39_seed: &[u8], pos: u32) -> secp256k1::SecretKey {
+    pub fn get_taddr_from_bip39seed<P: consensus::Parameters + 'static>(config: &LightClientConfig<P>, bip39_seed: &[u8], pos: u32) -> secp256k1::SecretKey {
         assert_eq!(bip39_seed.len(), 64);
 
         let ext_t_key = ExtendedPrivKey::with_seed(bip39_seed).unwrap();
@@ -81,7 +81,7 @@ impl WalletTKey {
         }
     }
 
-    pub fn from_sk_string<P: consensus::Parameters>(config: &LightClientConfig<P>, sks: String) -> io::Result<Self> {
+    pub fn from_sk_string<P: consensus::Parameters + 'static>(config: &LightClientConfig<P>, sks: String) -> io::Result<Self> {
         let (_v, mut bytes) = sks.as_str().from_base58check()?;
         let suffix = bytes.split_off(32);
 
@@ -124,7 +124,7 @@ impl WalletTKey {
     }
 
     // Return the wallet string representation of a secret key
-    pub fn sk_as_string<P: consensus::Parameters>(&self, config: &LightClientConfig<P>) -> io::Result<String> {
+    pub fn sk_as_string<P: consensus::Parameters + 'static>(&self, config: &LightClientConfig<P>) -> io::Result<String> {
         if self.key.is_none() {
             return Err(io::Error::new(ErrorKind::NotFound, "Wallet locked"));
         }
@@ -244,7 +244,7 @@ impl WalletTKey {
         Ok(())
     }
 
-    pub fn unlock<P: consensus::Parameters>(&mut self, config: &LightClientConfig<P>, bip39_seed: &[u8], key: &secretbox::Key) -> io::Result<()> {
+    pub fn unlock<P: consensus::Parameters + 'static>(&mut self, config: &LightClientConfig<P>, bip39_seed: &[u8], key: &secretbox::Key) -> io::Result<()> {
         match self.keytype {
             WalletTKeyType::HdKey => {
                 let sk = Self::get_taddr_from_bip39seed(&config, &bip39_seed, self.hdkey_num.unwrap());

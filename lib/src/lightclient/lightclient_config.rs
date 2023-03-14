@@ -333,15 +333,15 @@ impl<P: consensus::Parameters> LightClientConfig<P> {
         self.params.coin_type()
     }
 
-    pub fn hrp_sapling_address(&self) -> &'static str {
+    pub fn hrp_sapling_address(&self) -> &str {
         self.params.hrp_sapling_payment_address()
     }
 
-    pub fn hrp_sapling_private_key(&self) -> &'static str {
+    pub fn hrp_sapling_private_key(&self) -> &str {
         self.params.hrp_sapling_extended_spending_key()
     }
 
-    pub fn hrp_sapling_viewing_key(&self) -> &'static str {
+    pub fn hrp_sapling_viewing_key(&self) -> &str {
         self.params.hrp_sapling_extended_full_viewing_key()
     }
 

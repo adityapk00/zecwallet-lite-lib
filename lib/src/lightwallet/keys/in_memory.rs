@@ -12,7 +12,7 @@ use zcash_client_backend::{
     encoding::{encode_extended_full_viewing_key, encode_extended_spending_key, encode_payment_address},
 };
 use zcash_encoding::Vector;
-use zcash_primitives::{consensus::{BlockHeight, Network}, consensus, legacy::TransparentAddress, sapling::{PaymentAddress, SaplingIvk}, zip32::{ChildIndex, ExtendedFullViewingKey, ExtendedSpendingKey}};
+use zcash_primitives::{consensus::BlockHeight, consensus, legacy::TransparentAddress, sapling::{PaymentAddress, SaplingIvk}, zip32::{ChildIndex, ExtendedFullViewingKey, ExtendedSpendingKey}};
 
 use crate::{
     lightclient::lightclient_config::{LightClientConfig, GAP_RULE_UNUSED_ADDRESSES},
@@ -55,7 +55,7 @@ pub struct InMemoryKeys<P> {
     pub(crate) tkeys: Vec<WalletTKey>,
 }
 
-impl<P: consensus::Parameters> InMemoryKeys<P> {
+impl<P: consensus::Parameters + Send + Sync+ 'static> InMemoryKeys<P> {
     pub fn serialized_version() -> u64 {
         return 21;
     }
@@ -798,7 +798,7 @@ pub enum InMemoryKeysError {
 }
 
 #[async_trait::async_trait]
-impl <P: consensus::Parameters> InsecureKeystore for InMemoryKeys<P> {
+impl <P: consensus::Parameters + Send + Sync+ 'static> InsecureKeystore for InMemoryKeys<P> {
     type Error = InMemoryKeysError;
 
     async fn get_seed_phrase(&self) -> Result<String, Self::Error> {
@@ -850,12 +850,12 @@ impl <P: consensus::Parameters> InsecureKeystore for InMemoryKeys<P> {
     }
 }
 
-impl<'this,P: consensus::Parameters> KeystoreBuilderLifetime<'this> for InMemoryKeys<P> {
-    type Builder = InMemoryBuilder<'this, Network>;
+impl<'this,P: consensus::Parameters + Send + Sync + 'static> KeystoreBuilderLifetime<'this> for InMemoryKeys<P> {
+    type Builder = InMemoryBuilder<'this, P>;
 }
 
 #[async_trait::async_trait]
-impl <P: consensus::Parameters>Keystore for InMemoryKeys<P> {
+impl <P: consensus::Parameters + Send + Sync+ 'static>Keystore for InMemoryKeys<P> {
     type Error = InMemoryKeysError;
 
     async fn get_t_pubkey(&self, path: &[ChildIndex]) -> Result<secp256k1::PublicKey, Self::Error> {
@@ -868,10 +868,9 @@ impl <P: consensus::Parameters>Keystore for InMemoryKeys<P> {
     async fn get_z_payment_address(&self, path: &[ChildIndex]) -> Result<PaymentAddress, Self::Error> {
         self.get_z_private_spending_key(path).await.and_then(|extsk| {
             let extfvk = ExtendedFullViewingKey::from(&extsk);
-            extfvk
+            Ok(extfvk
                 .default_address()
-                .map(|tuple| tuple.1)
-                .map_err(|_| InMemoryKeysError::UnableToGetDefaultZAddr)
+                .1)
         })
     }
 

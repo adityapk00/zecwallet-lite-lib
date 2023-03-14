@@ -1278,7 +1278,7 @@ impl <P: consensus::Parameters + Send + Sync + 'static> Command<P> for QuitComma
     }
 }
 
-pub fn get_commands<P: consensus::Parameters + Send + Sync>() -> Box<HashMap<String, Box<dyn Command<P>>>> {
+pub fn get_commands<P: consensus::Parameters + Send + Sync+ 'static>() -> Box<HashMap<String, Box<dyn Command<P>>>> {
     let mut map: HashMap<String, Box<dyn Command<P>>> = HashMap::new();
 
     map.insert("sync".to_string(), Box::new(SyncCommand {}));

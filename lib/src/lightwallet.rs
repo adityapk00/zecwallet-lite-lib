@@ -1335,15 +1335,21 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightWallet<P> {
             }
         }
 
-        // Set up a channel to recieve updates on the progress of building the transaction.
-        let (tx, rx) = tokio::sync::mpsc::channel(10);
+        // Set up a channel to recieve updates on the progress of building the transaction
         let progress = self.send_progress.clone();
 
+        // Use a separate thread to handle sending from std::mpsc to tokio::sync::mpsc
+        let (tx2, mut rx2) = tokio::sync::mpsc::unbounded_channel();
+        std::thread::spawn(move || {
+            while let Ok(r) = progress_notifier_rx.recv() {
+                tx2.send(r.cur()).unwrap();
+            }
+        });
+
         let progress_handle = tokio::spawn(async move {
-            futures::pin_mut!(rx);
-            while let Some(r) = rx.recv().await {
+            while let Some(r) = rx2.recv().await {
                 println!("Progress: {}", r);
-                progress.write().await.progress = r as u32;
+                progress.write().await.progress = r;
             }
 
             progress.write().await.is_send_in_progress = false;

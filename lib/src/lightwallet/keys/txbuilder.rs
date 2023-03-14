@@ -1,5 +1,5 @@
 use secp256k1::PublicKey as SecpPublicKey;
-use tokio::sync::mpsc;
+use std::sync::mpsc;
 use zcash_primitives::{
     consensus::BranchId,
     keys::OutgoingViewingKey,
@@ -12,6 +12,7 @@ use zcash_primitives::{
         Transaction,
     },
 };
+use zcash_primitives::transaction::builder::Progress;
 
 cfg_if::cfg_if! {
     if #[cfg(feature = "hsm-compat")] {
@@ -78,7 +79,7 @@ pub trait Builder {
     /// represents the total steps completed so far. It will eventually send number of
     /// spends + outputs. If there's an error building the transaction, the channel is
     /// closed.
-    fn with_progress_notifier(&mut self, progress_notifier: Option<mpsc::Sender<usize>>);
+    fn with_progress_notifier(&mut self, progress_notifier: Option<mpsc::Sender<Progress>>);
 
     /// This will take care of building the transaction with the inputs given so far
     ///
