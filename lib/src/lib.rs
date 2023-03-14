@@ -13,6 +13,8 @@ pub mod lightwallet;
 #[folder = "zcash-params/"]
 pub struct SaplingParams;
 
+pub use zcash_primitives::consensus::{MainNetwork, Parameters};
+
 // pub mod blaze;
 // pub mod compact_formats;
 // pub mod grpc_connector;
