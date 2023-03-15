@@ -319,7 +319,7 @@ pub mod tests {
     use super::WalletZKey;
     use crate::lightclient::lightclient_config::{LightClientConfig,UnitTestNetwork};
 
-    fn get_config() -> LightClientConfig<P> {
+    fn get_config() -> LightClientConfig<UnitTestNetwork> {
         LightClientConfig {
             server: "0.0.0.0:0".parse().unwrap(),
             chain_name: "main".to_string(),

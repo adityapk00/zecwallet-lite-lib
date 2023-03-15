@@ -1330,6 +1330,7 @@ pub mod tests {
     use crate::lightclient::{lightclient_config::LightClientConfig, LightClient};
     use lazy_static::lazy_static;
     use tokio::runtime::Runtime;
+    use crate::lightclient::lightclient_config::UnitTestNetwork;
 
     lazy_static! {
         static ref TEST_SEED: String = "youth strong sweet gorilla hammer unhappy congress stamp left stereo riot salute road tag clean toilet artefact fork certain leopard entire civil degree wonder".to_string();
@@ -1339,7 +1340,7 @@ pub mod tests {
         let lc = Runtime::new()
             .unwrap()
             .block_on(LightClient::test_new(
-                &LightClientConfig::create_unconnected("main".to_string(), None),
+                &LightClientConfig::create_unconnected(UnitTestNetwork, None),
                 Some(TEST_SEED.to_string()),
                 0,
             ))

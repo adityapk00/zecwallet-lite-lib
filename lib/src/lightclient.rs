@@ -43,6 +43,9 @@ cfg_if::cfg_if! {
 pub(crate) mod checkpoints;
 pub mod lightclient_config;
 
+#[cfg(test)]
+pub(crate) mod faketx;
+
 #[derive(Clone, Debug)]
 pub struct WalletStatus {
     pub is_syncing: bool,

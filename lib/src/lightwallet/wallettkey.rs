@@ -335,13 +335,13 @@ mod test {
     use rand::{rngs::OsRng, Rng};
     use secp256k1::SecretKey;
 
-    use crate::lightclient::lightclient_config::LightClientConfig;
+    use crate::lightclient::lightclient_config::{LightClientConfig, UnitTestNetwork};
 
     use super::WalletTKey;
 
     #[test]
     fn tkey_encode_decode() {
-        let config = LightClientConfig::create_unconnected("main".to_string(), None);
+        let config = LightClientConfig::create_unconnected(UnitTestNetwork, None);
 
         for _i in 0..10 {
             let mut b = [0u8; 32];

@@ -589,6 +589,7 @@ mod test {
     use std::sync::Arc;
 
     use crate::blaze::sync_status::SyncStatus;
+    use crate::lightclient::lightclient_config::UnitTestNetwork;
     use crate::lightwallet::wallet_txns::WalletTxns;
     use crate::{
         blaze::test_utils::{FakeCompactBlock, FakeCompactBlockList},
@@ -607,7 +608,7 @@ mod test {
     #[tokio::test]
     async fn setup_finish_simple() {
         let mut nw = BlockAndWitnessData::new_with_batchsize(
-            &LightClientConfig::create_unconnected("main".to_string(), None),
+            &LightClientConfig::create_unconnected(UnitTestNetwork, None),
             25_000,
         );
 
@@ -624,7 +625,7 @@ mod test {
     #[tokio::test]
     async fn setup_finish_large() {
         let mut nw = BlockAndWitnessData::new_with_batchsize(
-            &LightClientConfig::create_unconnected("main".to_string(), None),
+            &LightClientConfig::create_unconnected(UnitTestNetwork, None),
             25_000,
         );
 
@@ -642,7 +643,7 @@ mod test {
 
     #[tokio::test]
     async fn from_sapling_genesis() {
-        let mut config = LightClientConfig::create_unconnected("main".to_string(), None);
+        let mut config = LightClientConfig::create_unconnected(UnitTestNetwork, None);
         config.sapling_activation_height = 1;
 
         let blocks = FakeCompactBlockList::new(200).into_blockdatas();
@@ -672,6 +673,7 @@ mod test {
             for block in blocks {
                 cb_sender
                     .send(block.cb())
+                    .await
                     .map_err(|e| format!("Couldn't send block: {}", e))?;
             }
             if let Some(Some(_h)) = reorg_rx.recv().await {
@@ -692,7 +694,7 @@ mod test {
 
     #[tokio::test]
     async fn with_existing_batched() {
-        let mut config = LightClientConfig::create_unconnected("main".to_string(), None);
+        let mut config = LightClientConfig::create_unconnected(UnitTestNetwork, None);
         config.sapling_activation_height = 1;
 
         let mut blocks = FakeCompactBlockList::new(200).into_blockdatas();
@@ -724,6 +726,7 @@ mod test {
             for block in blocks {
                 cb_sender
                     .send(block.cb())
+                    .await
                     .map_err(|e| format!("Couldn't send block: {}", e))?;
             }
             if let Some(Some(_h)) = reorg_rx.recv().await {
@@ -749,7 +752,7 @@ mod test {
 
     #[tokio::test]
     async fn with_reorg() {
-        let mut config = LightClientConfig::create_unconnected("main".to_string(), None);
+        let mut config = LightClientConfig::create_unconnected(UnitTestNetwork, None);
         config.sapling_activation_height = 1;
 
         let mut blocks = FakeCompactBlockList::new(100).into_blockdatas();
@@ -822,6 +825,7 @@ mod test {
             for block in blocks {
                 cb_sender
                     .send(block.cb())
+                    .await
                     .map_err(|e| format!("Couldn't send block: {}", e))?;
             }
 
@@ -837,6 +841,7 @@ mod test {
 
                 cb_sender
                     .send(reorged_blocks.drain(0..1).next().unwrap().cb())
+                    .await
                     .map_err(|e| format!("Couldn't send block: {}", e))?;
             }
 

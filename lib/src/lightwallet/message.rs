@@ -211,7 +211,7 @@ pub mod tests {
 
         let extsk = ExtendedSpendingKey::master(&seed);
         let ivk = ExtendedFullViewingKey::from(&extsk);
-        let (_, addr) = ivk.default_address().unwrap();
+        let (_, addr) = ivk.default_address();
 
         (extsk, ivk.fvk.vk.ivk(), addr)
     }

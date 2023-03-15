@@ -61,8 +61,8 @@ impl<P: consensus::Parameters + Send + Sync+ 'static> InMemoryKeys<P> {
     }
 
     #[cfg(test)]
-    pub fn new_empty() -> Self {
-        let config = LightClientConfig::create_unconnected("mainnet".to_string(), None);
+    pub fn new_empty(params: P) -> Self {
+        let config = LightClientConfig::create_unconnected(params, None);
         Self {
             config,
             encrypted: false,

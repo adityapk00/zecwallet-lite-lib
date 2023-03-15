@@ -518,7 +518,7 @@ impl WalletTxns {
         }
     }
 
-    pub fn add_new_note(
+    pub fn add_new_sapling_note(
         &mut self,
         txid: TxId,
         height: BlockHeight,

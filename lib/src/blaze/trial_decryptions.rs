@@ -166,7 +166,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> TrialDecryptions<P> {
                                 let txid = WalletTx::new_txid(&ctx.hash);
                                 let nullifier = keys.get_note_nullifier(&ivk, witness.position() as u64, &note).await?;
 
-                                wallet_txns.write().await.add_new_note(
+                                wallet_txns.write().await.add_new_sapling_note(
                                     txid.clone(),
                                     height,
                                     false,
@@ -188,9 +188,6 @@ impl<P: consensus::Parameters + Send + Sync + 'static> TrialDecryptions<P> {
 
                                 Ok::<_, String>(())
                             }));
-
-                            // No need to try the other ivks if we found one
-                            break;
                         }
                     }
                 }

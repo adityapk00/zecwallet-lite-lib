@@ -1493,10 +1493,11 @@ mod test {
             LightClient,
         },
     };
+    use crate::lightclient::lightclient_config::UnitTestNetwork;
 
     #[tokio::test]
     async fn z_t_note_selection() {
-        let (data, config, ready_rx, stop_tx, h1) = create_test_server().await;
+        let (data, config, ready_rx, stop_tx, h1) = create_test_server(UnitTestNetwork).await;
         ready_rx.await.unwrap();
 
         let mut lc = LightClient::test_new(&config, None, 0).await.unwrap();
@@ -1628,7 +1629,7 @@ mod test {
 
     #[tokio::test]
     async fn multi_z_note_selection() {
-        let (data, config, ready_rx, stop_tx, h1) = create_test_server().await;
+        let (data, config, ready_rx, stop_tx, h1) = create_test_server(UnitTestNetwork).await;
         ready_rx.await.unwrap();
 
         let mut lc = LightClient::test_new(&config, None, 0).await.unwrap();
