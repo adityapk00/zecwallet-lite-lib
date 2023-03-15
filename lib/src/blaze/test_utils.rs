@@ -84,15 +84,19 @@ impl FakeTransaction {
     // the output with the ovk if available
     fn add_sapling_output(&mut self, value: u64, ovk: Option<OutgoingViewingKey>, to: &PaymentAddress) -> Note {
         // Create a fake Note for the account
-        let rng = OsRng;
+        let mut rng = OsRng;
+
+        let mut rseed_bytes = [0u8; 32];
+        rng.fill_bytes(&mut rseed_bytes);
+
         let note = Note {
             g_d: to.diversifier().g_d().unwrap(),
             pk_d: to.pk_d().clone(),
             value,
-            rseed: Rseed::BeforeZip212(jubjub::Fr::random(rng)),
+            rseed: Rseed::AfterZip212(rseed_bytes),
         };
 
-        let encryptor = NoteEncryption::<SaplingDomain<zcash_primitives::consensus::Network>>::new(ovk, note.clone(), to.clone(), Memo::default().into());
+        let encryptor = NoteEncryption::<SaplingDomain<consensus::Network>>::new(ovk, note.clone(), to.clone(), Memo::default().into());
 
         let mut rng = OsRng;
         let rcv = jubjub::Fr::random(&mut rng);
@@ -298,6 +302,8 @@ impl FakeCompactBlock {
             // Create a fake CompactBlock containing the note
             let mut cout = CompactSaplingOutput::default();
             cout.cmu = note.cmu().to_bytes().to_vec();
+            cout.epk = [0u8; 32].to_vec();
+            cout.ciphertext = [0u8; 52].to_vec();
 
             ctx.outputs.push(cout);
         }

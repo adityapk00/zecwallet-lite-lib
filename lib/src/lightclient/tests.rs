@@ -1,6 +1,7 @@
 use ff::{Field, PrimeField};
 use group::GroupEncoding;
 use json::JsonValue;
+use rand::RngCore;
 use rand::rngs::OsRng;
 use tempdir::TempDir;
 use tokio::runtime::Runtime;
@@ -350,16 +351,22 @@ async fn multiple_incoming_same_tx() {
 
     // Add 4 outputs
     for i in 0..4 {
-        let rng = OsRng;
+        let mut rng = OsRng;
         let value = value + i;
+
+        let mut rseed_bytes = [0u8; 32];
+        rng.fill_bytes(&mut rseed_bytes);
+
         let note = Note {
             g_d: to.diversifier().g_d().unwrap(),
             pk_d: to.pk_d().clone(),
             value,
-            rseed: Rseed::BeforeZip212(jubjub::Fr::random(rng)),
+            rseed: Rseed::AfterZip212(rseed_bytes),
         };
 
-        let encryptor = NoteEncryption::<SaplingDomain<zcash_primitives::consensus::Network>>::new(None, note.clone(), to.clone(), Memo::default().into());
+        let encryptor =
+            NoteEncryption::<SaplingDomain<zcash_primitives::consensus::Network>>::
+            new(None, note.clone(), to.clone(), Memo::default().into());
 
         let mut rng = OsRng;
         let rcv = jubjub::Fr::random(&mut rng);

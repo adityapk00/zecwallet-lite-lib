@@ -932,7 +932,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightWallet<P> {
             Err(e) => return format!("Error: {}", e),
         };
 
-        if keys.unlocked {
+        if !keys.unlocked {
             return "Error: Can't add key while wallet is locked".to_string();
         }
 

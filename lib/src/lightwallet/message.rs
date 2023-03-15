@@ -64,8 +64,9 @@ impl Message {
         };
         let cv = value_commitment.commitment().into();
 
-        // Use a rseed from pre-canopy. It doesn't really matter, but this is what is tested out.
-        let rseed = Rseed::BeforeZip212(jubjub::Fr::random(&mut rng));
+        let mut rseed_bytes = [0u8; 32];
+        rng.fill_bytes(&mut rseed_bytes);
+        let rseed = Rseed::AfterZip212(rseed_bytes);
 
         // 0-value note with the rseed
         let note = self.to.create_note(value, rseed).unwrap();
@@ -195,7 +196,7 @@ impl Message {
 pub mod tests {
     use ff::Field;
     use group::GroupEncoding;
-    use rand::{rngs::OsRng, Rng};
+    use rand::{rngs::OsRng, Rng, RngCore};
     use zcash_primitives::{
         memo::Memo,
         sapling::{PaymentAddress, Rseed, SaplingIvk},
@@ -285,9 +286,10 @@ pub mod tests {
         assert!(dec_success.is_err());
 
         // Create a new, random EPK
-        let note = to
-            .create_note(0, Rseed::BeforeZip212(jubjub::Fr::random(&mut rng)))
-            .unwrap();
+        let mut rseed_bytes = [0u8; 32];
+        rng.fill_bytes(&mut rseed_bytes);
+        let rseed = Rseed::AfterZip212(rseed_bytes);
+        let note = to.create_note(0, rseed).unwrap();
         let esk = note.generate_or_derive_esk(&mut rng);
         let epk_bad: jubjub::ExtendedPoint = (note.g_d * esk).into();
 

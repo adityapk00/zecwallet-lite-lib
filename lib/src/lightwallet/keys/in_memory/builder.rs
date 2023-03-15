@@ -17,14 +17,11 @@ use zcash_primitives::{
 use zcash_primitives::consensus::BranchId;
 use zcash_primitives::transaction::builder::Progress;
 
-use crate::lightwallet::{
-    keys::{
-        in_memory::InMemoryKeys,
-        txbuilder::{SaplingMetadata, TxProver},
-        Builder,
-    },
-    utils::compute_taddr,
-};
+use crate::lightwallet::{keys::{
+    in_memory::InMemoryKeys,
+    txbuilder::{SaplingMetadata, TxProver},
+    Builder,
+}, utils::compute_taddr};
 
 #[derive(Debug, thiserror::Error)]
 pub enum BuilderError {
@@ -83,7 +80,12 @@ impl<'a, P: Parameters + Send + Sync + 'static> Builder for InMemoryBuilder<'a, 
         value: Amount,
         memo: Option<MemoBytes>,
     ) -> Result<&mut Self, Self::Error> {
-        self.inner.add_sapling_output(ovk, to, value, memo.unwrap())?;
+        // Compute memo if it exists
+        let encoded_memo = match memo {
+            None => MemoBytes::empty(),
+            Some(s) => s,
+        };
+        self.inner.add_sapling_output(ovk, to, value, encoded_memo)?;
         Ok(self)
     }
 
