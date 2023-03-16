@@ -237,7 +237,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
             info!("Created LightClient to {}", &config.server);
 
             // Save
-            l.do_save()
+            l.do_save(true)
                 .await
                 .map_err(|s| io::Error::new(ErrorKind::PermissionDenied, s))?;
 
@@ -279,7 +279,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
             info!("Created LightClient to {}", &config.server);
 
             // Save
-            l.do_save()
+            l.do_save(true)
                 .await
                 .map_err(|s| io::Error::new(ErrorKind::PermissionDenied, s))?;
 
@@ -343,7 +343,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
                 };
 
                 l.set_wallet_initial_state(birthday).await;
-                l.do_save().await.map_err(|e| Error::new(ErrorKind::InvalidData, e))?;
+                l.do_save(true).await.map_err(|e| Error::new(ErrorKind::InvalidData, e))?;
 
                 info!("Created new wallet!");
 
@@ -540,7 +540,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
         }
     }
 
-    pub async fn do_save(&self) -> Result<(), String> {
+    pub async fn do_save(&self, grab_lock: bool) -> Result<(), String> {
         // On mobile platforms, disable the save, because the saves will be handled by the native layer, and not in rust
         if cfg!(all(not(target_os = "ios"), not(target_os = "android"))) {
             // If the wallet is encrypted but unlocked, lock it again.
@@ -559,7 +559,11 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
 
             {
                 // Prevent any overlapping syncs during save, and don't save in the middle of a sync
-                let _lock = self.sync_lock.lock().await;
+                let _lock = if grab_lock {
+                    Some(self.sync_lock.lock().await)
+                } else {
+                    None
+                };
 
                 let mut wallet_bytes = vec![];
                 match self.wallet.write(&mut wallet_bytes).await {
@@ -998,7 +1002,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
         };
 
         //TODO: re-enable this when we have proper checks for ledger support
-        // self.do_save().await?;
+        // self.do_save(true).await?;
 
         Ok(array![new_address])
     }
@@ -1033,7 +1037,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
             return Err(e);
         }
 
-        self.do_save().await?;
+        self.do_save(true).await?;
         Ok(array![address])
     }
 
@@ -1055,7 +1059,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
             addr
         };
 
-        self.do_save().await?;
+        self.do_save(true).await?;
 
         Ok(array![new_address])
     }
@@ -1078,21 +1082,18 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
             addr
         };
 
-        self.do_save().await?;
+        self.do_save(true).await?;
 
         Ok(array![new_address])
     }
 
     pub async fn clear_state(&self) {
-        //first, get wallet birthday
+        // First, clear the state from the wallet
+        self.wallet.clear_all().await;
+
+        // Then set the initial block
         let birthday = self.wallet.get_birthday().await;
-
-        // and retrieve initial state
-        if let Some((height, hash, tree)) = self.config.get_initial_state(birthday).await {
-            //then, reset wallet to that height
-            self.wallet.clear_all_and_set_initial_block(height, &hash, &tree).await;
-        }
-
+        self.set_wallet_initial_state(birthday).await;
         info!("Cleared wallet state, with birthday at {}", birthday);
     }
 
@@ -1109,7 +1110,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
         let response = self.do_sync(true).await;
 
         if response.is_ok() {
-            self.do_save().await?;
+            self.do_save(true).await?;
         }
 
         info!("Rescan finished");
@@ -1308,7 +1309,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
     }
 
     /// Start syncing in batches with the max size, so we don't consume memory more than
-    // wha twe can handle.
+    /// what we can handle.
     async fn start_sync(&self) -> Result<JsonValue, String> {
         // We can only do one sync at a time because we sync blocks in serial order
         // If we allow multiple syncs, they'll all get jumbled up.
@@ -1346,32 +1347,39 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightClient<P> {
 
         // Re-read the last scanned height
         let last_scanned_height = self.wallet.last_scanned_height().await;
-        let batch_size = 500_000;
 
         let mut latest_block_batches = vec![];
         let mut prev = last_scanned_height;
         while latest_block_batches.is_empty() || prev != latest_blockid.height {
+            let mut batch_size = 50_000;
+            if prev + batch_size > 1_700_000 {
+                batch_size = 1_000;
+            }
+
             let batch = cmp::min(latest_blockid.height, prev + batch_size);
             prev = batch;
             latest_block_batches.push(batch);
         }
 
-        //println!("Batches are {:?}", latest_block_batches);
-
         // Increment the sync ID so the caller can determine when it is over
-        self.bsync_data
-            .write()
-            .await
-            .sync_status
-            .write()
-            .await
-            .start_new(latest_block_batches.len());
+        {
+            let l1 = self.bsync_data.write().await;
+            // println!("l1");
+
+            let mut l2 = l1.sync_status.write().await;
+            // println!("l2");
+
+            l2.start_new(latest_block_batches.len());
+        }
 
         let mut res = Err("No batches were run!".to_string());
         for (batch_num, batch_latest_block) in latest_block_batches.into_iter().enumerate() {
             res = self.start_sync_batch(batch_latest_block, batch_num).await;
             if res.is_err() {
+                info!("Sync failed, not saving: {:?}", res.as_ref().err());
                 return res;
+            } else {
+                self.do_save(false).await?;
             }
         }
 

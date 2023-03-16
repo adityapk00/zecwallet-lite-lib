@@ -64,6 +64,7 @@ impl Message {
         };
         let cv = value_commitment.commitment().into();
 
+        // Use a rseed from pre-canopy. It doesn't really matter, but this is what is tested out.
         let mut rseed_bytes = [0u8; 32];
         rng.fill_bytes(&mut rseed_bytes);
         let rseed = Rseed::AfterZip212(rseed_bytes);
@@ -71,14 +72,19 @@ impl Message {
         // 0-value note with the rseed
         let note = self.to.create_note(value, rseed).unwrap();
 
-        // CMU is used in the out_cuphertext. Technically this is not needed to recover the note
+        // CMU is used in the out_ciphertext. Technically this is not needed to recover the note
         // by the receiver, but it is needed to recover the note by the sender.
         let cmu = note.cmu();
 
-        // Create the note encrytion object
-        let ne = NoteEncryption::<SaplingDomain<zcash_primitives::consensus::Network>>::new(ovk, note, self.to.clone(), self.memo.clone().into());
+        // Create the note encryption object
+        let ne = NoteEncryption::<SaplingDomain<zcash_primitives::consensus::Network>>::new(
+            ovk,
+            note,
+            self.to.clone(),
+            self.memo.clone().into(),
+        );
 
-        // EPK, which needs to be sent to the reciever.
+        // EPK, which needs to be sent to the receiver.
         let epk = EphemeralKeyBytes::from(ne.epk().to_bytes());
 
         // enc_ciphertext is the encrypted note, out_ciphertext is the outgoing cipher text that the
@@ -121,7 +127,7 @@ impl Message {
         if data.len() != 1 + Message::magic_word().len() + 32 + 32 + ENC_CIPHERTEXT_SIZE {
             return Err(io::Error::new(
                 ErrorKind::InvalidData,
-                "Incorrect encrypred payload size".to_string(),
+                "Incorrect encrypted payload size".to_string(),
             ));
         }
 
@@ -166,12 +172,9 @@ impl Message {
         let mut enc_bytes = [0u8; ENC_CIPHERTEXT_SIZE];
         reader.read_exact(&mut enc_bytes)?;
 
-        // Attempt decryption. We attempt at main_network at 1,000,000 height, but it doesn't
-        // really apply, since this note is not spendable anyway, so the rseed and the note iteself
-        // are not usable.
         match try_sapling_note_decryption(
             &MAIN_NETWORK,
-            BlockHeight::from_u32(1_000_000),
+            BlockHeight::from_u32(1_500_000),
             &ivk,
             &OutputDescription {
                 cmu: cmu.unwrap(),
@@ -194,7 +197,6 @@ impl Message {
 
 #[cfg(test)]
 pub mod tests {
-    use ff::Field;
     use group::GroupEncoding;
     use rand::{rngs::OsRng, Rng, RngCore};
     use zcash_primitives::{
