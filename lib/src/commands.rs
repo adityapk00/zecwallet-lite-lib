@@ -147,7 +147,7 @@ impl <P: consensus::Parameters + Send + Sync + 'static> Command<P> for RescanCom
         h.push("Usage:");
         h.push("rescan");
         h.push("");
-        h.push("This command will download all blocks since the intial block again from the light client server");
+        h.push("This command will download all blocks since the initial block again from the light client server");
         h.push("and attempt to scan each block for transactions belonging to the wallet.");
 
         h.join("\n")

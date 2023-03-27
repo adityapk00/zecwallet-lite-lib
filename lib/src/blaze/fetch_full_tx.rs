@@ -80,7 +80,8 @@ impl<P: consensus::Parameters + Send + Sync + 'static> FetchFullTxns<P> {
                 let last_progress = last_progress.clone();
 
                 workers.push(tokio::spawn(async move {
-                    // It is possible that we recieve the same txid multiple times, so we keep track of all the txids that were fetched
+                    // It is possible that we receive the same txid multiple times, so we
+                    // keep track of all the txids that were fetched
                     let tx = {
                         // Fetch the TxId from LightwalletD and process all the parts of it.
                         let (tx, rx) = oneshot::channel();
