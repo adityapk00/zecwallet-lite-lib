@@ -7,7 +7,7 @@ use log::{error, info};
 use zecwalletlitelib::lightclient::lightclient_config::LightClientConfig;
 use zecwalletlitelib::{commands, lightclient::LightClient};
 
-use zecwalletlitelib::{MainNetwork, Parameters};
+use zecwalletlitelib::{MainNetwork, Parameters, TestNetwork};
 
 pub mod version;
 
@@ -202,7 +202,9 @@ pub fn start_interactive(command_tx: Sender<(String, Vec<String>)>, resp_rx: Rec
     }
 }
 
-pub fn command_loop<P: Parameters + Send + Sync + 'static>(lc: Arc<LightClient<P>>) -> (Sender<(String, Vec<String>)>, Receiver<String>) {
+pub fn command_loop<P: Parameters + Send + Sync + 'static>(
+    lc: Arc<LightClient<P>>,
+) -> (Sender<(String, Vec<String>)>, Receiver<String>) {
     let (command_tx, command_rx) = channel::<(String, Vec<String>)>();
     let (resp_tx, resp_rx) = channel::<String>();
 
@@ -231,7 +233,7 @@ pub fn command_loop<P: Parameters + Send + Sync + 'static>(lc: Arc<LightClient<P
 
 pub fn attempt_recover_seed(_password: Option<String>) {
     // Create a Light Client Config in an attempt to recover the file.
-    let _config = LightClientConfig::<MainNetwork>{
+    let _config = LightClientConfig::<MainNetwork> {
         server: "0.0.0.0:0".parse().unwrap(),
         chain_name: "main".to_string(),
         sapling_activation_height: 0,
