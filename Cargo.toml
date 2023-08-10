@@ -9,7 +9,7 @@ debug = false
 
 [patch.crates-io]
 zcash_address = { git = "https://github.com/adityapk00/librustzcash", rev = "adf49f8b848a5ac85e1476354614eeae9880206a"}
-zcash_primitives = { git = "https://github.com/adityapk00/librustzcash", rev = "adf49f8b848a5ac85e1476354614eeae9880206a"}
+zcash_primitives = { git = "https://github.com/zcashonelove/zecwallet-light-cli", branch = "master"}
 zcash_client_backend = { git = "https://github.com/adityapk00/librustzcash", rev = "adf49f8b848a5ac85e1476354614eeae9880206a"}
 zcash_note_encryption = { git = "https://github.com/adityapk00/librustzcash", rev = "adf49f8b848a5ac85e1476354614eeae9880206a"}
 zcash_encoding = { git = "https://github.com/adityapk00/librustzcash", rev = "adf49f8b848a5ac85e1476354614eeae9880206a"}
