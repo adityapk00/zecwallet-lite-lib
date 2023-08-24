@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use http::Uri;
 use tokio::sync::RwLock;
+use zcash_primitives::consensus;
 
 use super::{block_witness_data::BlockAndWitnessData, sync_status::SyncStatus};
 use crate::compact_formats::TreeState;
@@ -16,7 +17,7 @@ pub struct BlazeSyncData {
 }
 
 impl BlazeSyncData {
-    pub fn new(config: &LightClientConfig) -> Self {
+    pub fn new<P: consensus::Parameters>(config: &LightClientConfig<P>) -> Self {
         let sync_status = Arc::new(RwLock::new(SyncStatus::default()));
 
         Self {

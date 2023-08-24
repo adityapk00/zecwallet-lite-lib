@@ -7,41 +7,40 @@ use log::info;
 use std::sync::Arc;
 use tokio::{
     sync::{
-        mpsc::{unbounded_channel, UnboundedSender},
+        mpsc::{channel, Sender, UnboundedSender},
         oneshot, RwLock,
     },
     task::JoinHandle,
 };
 
-use zcash_primitives::{
-    consensus::BlockHeight,
-    note_encryption::try_sapling_compact_note_decryption,
-    primitives::{Nullifier, SaplingIvk},
-    transaction::{Transaction, TxId},
-};
+use zcash_primitives::{consensus::BlockHeight,
+                       sapling::note_encryption::try_sapling_compact_note_decryption,
+                       sapling::{self, Nullifier, SaplingIvk},
+                       transaction::{Transaction, TxId},
+                       consensus};
 
 use super::syncdata::BlazeSyncData;
 
-pub struct TrialDecryptions {
-    keys: Arc<RwLock<Keystores>>,
+pub struct TrialDecryptions<P> {
+    keys: Arc<RwLock<Keystores<P>>>,
     wallet_txns: Arc<RwLock<WalletTxns>>,
 }
 
-impl TrialDecryptions {
-    pub fn new(keys: Arc<RwLock<Keystores>>, wallet_txns: Arc<RwLock<WalletTxns>>) -> Self {
+impl<P: consensus::Parameters + Send + Sync + 'static> TrialDecryptions<P> {
+    pub fn new(keys: Arc<RwLock<Keystores<P>>>, wallet_txns: Arc<RwLock<WalletTxns>>) -> Self {
         Self { keys, wallet_txns }
     }
 
     pub async fn start(
         &self,
         bsync_data: Arc<RwLock<BlazeSyncData>>,
-        detected_txid_sender: UnboundedSender<(TxId, Nullifier, BlockHeight, Option<u32>)>,
+        detected_txid_sender: Sender<(TxId, Option<sapling::Nullifier>, BlockHeight, Option<u32>)>,
         fulltx_fetcher: UnboundedSender<(TxId, oneshot::Sender<Result<Transaction, String>>)>,
-    ) -> (JoinHandle<()>, UnboundedSender<CompactBlock>) {
+    ) -> (JoinHandle<Result<(), String>>, Sender<CompactBlock>) {
         //info!("Starting trial decrptions processor");
 
-        // Create a new channel where we'll receive the blocks
-        let (tx, mut rx) = unbounded_channel::<CompactBlock>();
+        // Create a new channel where we'll receive the blocks. only 64 in the queue
+        let (tx, mut rx) = channel::<CompactBlock>(64);
 
         let keys = self.keys.clone();
         let wallet_txns = self.wallet_txns.clone();
@@ -55,7 +54,7 @@ impl TrialDecryptions {
             while let Some(cb) = rx.recv().await {
                 cbs.push(cb);
 
-                if cbs.len() >= 1_000 {
+                if cbs.len() >= 50 {
                     let keys = keys.clone();
                     let ivks = ivks.clone();
                     let wallet_txns = wallet_txns.clone();
@@ -85,10 +84,15 @@ impl TrialDecryptions {
             )));
 
             while let Some(r) = workers.next().await {
-                r.unwrap().unwrap();
+                match r {
+                    Ok(Ok(_)) => (),
+                    Ok(Err(s)) => return Err(s),
+                    Err(e) => return Err(e.to_string()),
+                };
             }
 
             //info!("Finished final trial decryptions");
+            Ok(())
         });
 
         return (h, tx);
@@ -96,11 +100,11 @@ impl TrialDecryptions {
 
     async fn trial_decrypt_batch(
         cbs: Vec<CompactBlock>,
-        keys: Arc<RwLock<Keystores>>,
+        keys: Arc<RwLock<Keystores<P>>>,
         bsync_data: Arc<RwLock<BlazeSyncData>>,
         ivks: Arc<Vec<SaplingIvk>>,
         wallet_txns: Arc<RwLock<WalletTxns>>,
-        detected_txid_sender: UnboundedSender<(TxId, Nullifier, BlockHeight, Option<u32>)>,
+        detected_txid_sender: Sender<(TxId, Option<Nullifier>, BlockHeight, Option<u32>)>,
         fulltx_fetcher: UnboundedSender<(TxId, oneshot::Sender<Result<Transaction, String>>)>,
     ) -> Result<(), String> {
         let config = keys.read().await.config();
@@ -116,20 +120,26 @@ impl TrialDecryptions {
                 let mut wallet_tx = false;
 
                 for (output_num, co) in ctx.outputs.iter().enumerate() {
+                    /*
                     let cmu = co.cmu().map_err(|_| "No CMU".to_string())?;
                     let epk = match co.epk() {
                         Err(_) => continue,
                         Ok(epk) => epk,
                     };
+                     */
+                    for (_, ivk) in ivks.iter().map(|k| SaplingIvk(k.0)).enumerate() {
+/*                        let co_desc = CompactOutputDescription {
+                            cmu: *co.cmu()?,
+                            ephemeral_key: *co.epk()?,
+                            enc_ciphertext: *co.ciphertext.try_into().map_err(|_| ())?,
+                        };
 
-                    for (i, ivk) in ivks.iter().map(|k| SaplingIvk(k.0)).enumerate() {
+ */
                         if let Some((note, to)) = try_sapling_compact_note_decryption(
                             &config.get_params(),
                             height,
                             &ivk,
-                            &epk,
-                            &cmu,
-                            &co.ciphertext,
+                            co,
                         ) {
                             wallet_tx = true;
 
@@ -156,7 +166,7 @@ impl TrialDecryptions {
                                 let txid = WalletTx::new_txid(&ctx.hash);
                                 let nullifier = keys.get_note_nullifier(&ivk, witness.position() as u64, &note).await?;
 
-                                wallet_txns.write().await.add_new_note(
+                                wallet_txns.write().await.add_new_sapling_note(
                                     txid.clone(),
                                     height,
                                     false,
@@ -172,14 +182,12 @@ impl TrialDecryptions {
                                 info!("Trial decrypt Detected txid {}", &txid);
 
                                 detected_txid_sender
-                                    .send((txid, nullifier, height, Some(output_num as u32)))
+                                    .send((txid, Some(nullifier), height, Some(output_num as u32)))
+                                    .await
                                     .unwrap();
 
                                 Ok::<_, String>(())
                             }));
-
-                            // No need to try the other ivks if we found one
-                            break;
                         }
                     }
                 }

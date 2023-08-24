@@ -23,16 +23,19 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
 use zcash_primitives::block::BlockHash;
+use zcash_primitives::consensus;
+use zcash_primitives::consensus::{BlockHeight, BranchId};
 use zcash_primitives::merkle_tree::CommitmentTree;
 use zcash_primitives::sapling::Node;
 use zcash_primitives::transaction::{Transaction, TxId};
+use crate::lightclient::lightclient_config::UnitTestNetwork;
 
 use super::lightclient_config::LightClientConfig;
 use super::LightClient;
 
-pub async fn create_test_server() -> (
-    Arc<RwLock<TestServerData>>,
-    LightClientConfig,
+pub async fn create_test_server<P: consensus::Parameters + Send + Sync + 'static>(params: P) -> (
+    Arc<RwLock<TestServerData<P>>>,
+    LightClientConfig<P>,
     oneshot::Receiver<bool>,
     oneshot::Sender<bool>,
     JoinHandle<()>,
@@ -45,7 +48,7 @@ pub async fn create_test_server() -> (
     let uri = format!("http://{}", server_port);
     let addr = server_port.parse().unwrap();
 
-    let mut config = LightClientConfig::create_unconnected("main".to_string(), None);
+    let mut config = LightClientConfig::create_unconnected(params, None);
     config.server = uri.parse().unwrap();
 
     let (service, data) = TestGRPCService::new(config.clone());
@@ -88,10 +91,10 @@ pub async fn create_test_server() -> (
     (data, config, ready_rx, stop_tx, h1)
 }
 
-pub async fn mine_random_blocks(
+pub async fn mine_random_blocks<P: consensus::Parameters + Send + Sync + 'static>(
     fcbl: &mut FakeCompactBlockList,
-    data: &Arc<RwLock<TestServerData>>,
-    lc: &LightClient,
+    data: &Arc<RwLock<TestServerData<P>>>,
+    lc: &LightClient<P>,
     num: u64,
 ) {
     let cbs = fcbl.add_blocks(num).into_compact_blocks();
@@ -100,10 +103,10 @@ pub async fn mine_random_blocks(
     lc.do_sync(true).await.unwrap();
 }
 
-pub async fn mine_pending_blocks(
+pub async fn mine_pending_blocks<P: consensus::Parameters + Send + Sync + 'static>(
     fcbl: &mut FakeCompactBlockList,
-    data: &Arc<RwLock<TestServerData>>,
-    lc: &LightClient,
+    data: &Arc<RwLock<TestServerData<P>>>,
+    lc: &LightClient<P>,
 ) {
     let cbs = fcbl.into_compact_blocks();
 
@@ -113,12 +116,14 @@ pub async fn mine_pending_blocks(
     // Add all the t-addr spend's t-addresses into the maps, so the test grpc server
     // knows to serve this tx when the txns for this particular taddr are requested.
     for (t, _h, taddrs) in v.iter_mut() {
-        for vin in &t.vin {
-            let prev_txid = WalletTx::new_txid(&vin.prevout.hash().to_vec());
-            if let Some(wtx) = lc.wallet.txns.read().await.current.get(&prev_txid) {
-                if let Some(utxo) = wtx.utxos.iter().find(|u| u.output_index as u32 == vin.prevout.n()) {
-                    if !taddrs.contains(&utxo.address) {
-                        taddrs.push(utxo.address.clone());
+        if let Some(t_bundle) = t.transparent_bundle() {
+            for vin in &t_bundle.vin {
+                let prev_txid = WalletTx::new_txid(&vin.prevout.hash().to_vec());
+                if let Some(wtx) = lc.wallet.txns.read().await.current.get(&prev_txid) {
+                    if let Some(utxo) = wtx.utxos.iter().find(|u| u.output_index as u32 == vin.prevout.n()) {
+                        if !taddrs.contains(&utxo.address) {
+                            taddrs.push(utxo.address.clone());
+                        }
                     }
                 }
             }
@@ -131,17 +136,17 @@ pub async fn mine_pending_blocks(
 }
 
 #[derive(Debug)]
-pub struct TestServerData {
+pub struct TestServerData<P> {
     pub blocks: Vec<CompactBlock>,
     pub txns: HashMap<TxId, (Vec<String>, RawTransaction)>,
     pub sent_txns: Vec<RawTransaction>,
-    pub config: LightClientConfig,
+    pub config: LightClientConfig<P>,
     pub zec_price: f64,
     pub tree_states: Vec<(u64, String, String)>,
 }
 
-impl TestServerData {
-    pub fn new(config: LightClientConfig) -> Self {
+impl <P: consensus::Parameters>  TestServerData<P> {
+    pub fn new(config: LightClientConfig<P>) -> Self {
         let data = Self {
             blocks: vec![],
             txns: HashMap::new(),
@@ -196,13 +201,12 @@ impl TestServerData {
     }
 }
 
-#[derive(Debug)]
-pub struct TestGRPCService {
-    data: Arc<RwLock<TestServerData>>,
+pub struct TestGRPCService<P> {
+    data: Arc<RwLock<TestServerData<P>>>,
 }
 
-impl TestGRPCService {
-    pub fn new(config: LightClientConfig) -> (Self, Arc<RwLock<TestServerData>>) {
+impl<P: consensus::Parameters> TestGRPCService<P> {
+    pub fn new(config: LightClientConfig<P>) -> (Self, Arc<RwLock<TestServerData<P>>>) {
         let data = Arc::new(RwLock::new(TestServerData::new(config)));
         let s = Self { data: data.clone() };
 
@@ -210,13 +214,13 @@ impl TestGRPCService {
     }
 
     async fn wait_random() {
-        let msecs = OsRng.gen_range(0, 100);
+        let msecs = OsRng.gen_range(0..100);
         sleep(std::time::Duration::from_millis(msecs)).await;
     }
 }
 
 #[tonic::async_trait]
-impl CompactTxStreamer for TestGRPCService {
+impl<P: consensus::Parameters + Send + Sync + 'static> CompactTxStreamer for TestGRPCService<P> {
     async fn get_latest_block(&self, _request: Request<ChainSpec>) -> Result<Response<BlockId>, Status> {
         Self::wait_random().await;
 
@@ -298,8 +302,12 @@ impl CompactTxStreamer for TestGRPCService {
 
     async fn send_transaction(&self, request: Request<RawTransaction>) -> Result<Response<SendResponse>, Status> {
         let rtx = request.into_inner();
-        let txid = Transaction::read(&rtx.data[..]).unwrap().txid();
-
+        let txid = Transaction::read(
+            &rtx.data[..],
+            BranchId::for_height(&UnitTestNetwork, BlockHeight::from_u32(rtx.height as u32)),
+        )
+            .unwrap()
+            .txid();
         self.data.write().await.sent_txns.push(rtx);
         Ok(Response::new(SendResponse {
             error_message: txid.to_string(),

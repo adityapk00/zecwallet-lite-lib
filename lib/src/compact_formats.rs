@@ -1,10 +1,14 @@
-use ff::PrimeField;
 use group::GroupEncoding;
+
 use std::convert::TryInto;
+use std::convert::TryFrom;
+
+use zcash_note_encryption::{EphemeralKeyBytes, ShieldedOutput};
 
 use zcash_primitives::{
     block::{BlockHash, BlockHeader},
-    consensus::BlockHeight,
+    consensus::{BlockHeight,Parameters},
+    sapling::note_encryption::SaplingDomain,
 };
 
 tonic::include_proto!("cash.z.wallet.sdk.rpc");
@@ -67,23 +71,36 @@ impl CompactBlock {
     }
 }
 
-impl CompactOutput {
+impl CompactSaplingOutput {
     /// Returns the note commitment for this output.
     ///
-    /// A convenience method that parses [`CompactOutput.cmu`].
+    /// A convenience method that parses [`CompactSaplingOutput.cmu`].
     ///
-    /// [`CompactOutput.cmu`]: #structfield.cmu
+    /// [`CompactSaplingOutput.cmu`]: #structfield.cmu
     pub fn cmu(&self) -> Result<bls12_381::Scalar, ()> {
         let mut repr = [0; 32];
         repr.as_mut().copy_from_slice(&self.cmu[..]);
-        bls12_381::Scalar::from_repr(repr).ok_or(())
+        //let r = bls12_381::Scalar::from_repr(repr);
+
+        let res = bls12_381::Scalar::from_bytes(&repr);
+        let r= if res.is_some().into() {
+            Some(res.unwrap())
+        } else {
+            None
+        };
+
+        if bool::from(r.is_some()) {
+            Ok(r.unwrap())
+        } else {
+            Err(())
+        }
     }
 
     /// Returns the ephemeral public key for this output.
     ///
-    /// A convenience method that parses [`CompactOutput.epk`].
+    /// A convenience method that parses [`CompactSaplingOutput.epk`].
     ///
-    /// [`CompactOutput.epk`]: #structfield.epk
+    /// [`CompactSaplingOutput.epk`]: #structfield.epk
     pub fn epk(&self) -> Result<jubjub::ExtendedPoint, ()> {
         let p = jubjub::ExtendedPoint::from_bytes(&self.epk[..].try_into().map_err(|_| ())?);
         if p.is_some().into() {
@@ -92,4 +109,20 @@ impl CompactOutput {
             Err(())
         }
     }
+}
+
+impl<P: Parameters> ShieldedOutput<SaplingDomain<P>, 52_usize> for CompactSaplingOutput {
+    fn ephemeral_key(&self) -> EphemeralKeyBytes {
+        EphemeralKeyBytes(*vec_to_array(&self.epk))
+    }
+    fn cmstar_bytes(&self) -> [u8; 32] {
+        *vec_to_array(&self.cmu)
+    }
+    fn enc_ciphertext(&self) -> &[u8; 52] {
+        vec_to_array(&self.ciphertext)
+    }
+}
+
+pub fn vec_to_array<'a, T, const N: usize>(vec: &'a Vec<T>) -> &'a [T; N] {
+    <&[T; N]>::try_from(&vec[..]).unwrap()
 }

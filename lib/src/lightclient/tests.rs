@@ -1,7 +1,10 @@
+use std::fs;
+use std::path::Path;
+
 use ff::{Field, PrimeField};
 use group::GroupEncoding;
 use json::JsonValue;
-use jubjub::ExtendedPoint;
+use rand::RngCore;
 use rand::rngs::OsRng;
 use tempdir::TempDir;
 use tokio::runtime::Runtime;
@@ -12,15 +15,16 @@ use zcash_client_backend::address::RecipientAddress;
 use zcash_client_backend::encoding::{
     encode_extended_full_viewing_key, encode_extended_spending_key, encode_payment_address,
 };
-use zcash_primitives::consensus::BlockHeight;
+use zcash_note_encryption::{EphemeralKeyBytes, NoteEncryption};
+use zcash_primitives::consensus::{BlockHeight, BranchId, TEST_NETWORK};
 use zcash_primitives::memo::Memo;
 use zcash_primitives::merkle_tree::{CommitmentTree, IncrementalWitness};
-use zcash_primitives::note_encryption::SaplingNoteEncryption;
-use zcash_primitives::primitives::{Note, Rseed, ValueCommitment};
-use zcash_primitives::redjubjub::Signature;
+use zcash_primitives::sapling::redjubjub::Signature;
+use zcash_primitives::sapling::note_encryption::SaplingDomain;
 use zcash_primitives::sapling::Node;
+use zcash_primitives::sapling::{Note, Rseed, ValueCommitment};
 use zcash_primitives::transaction::components::amount::DEFAULT_FEE;
-use zcash_primitives::transaction::components::{OutputDescription, GROTH_PROOF_SIZE};
+use zcash_primitives::transaction::components::{OutputDescription, GROTH_PROOF_SIZE, sapling, Amount};
 use zcash_primitives::transaction::{Transaction, TransactionData};
 use zcash_primitives::zip32::{ExtendedFullViewingKey, ExtendedSpendingKey};
 
@@ -28,10 +32,12 @@ use crate::blaze::fetch_full_tx::FetchFullTxns;
 use crate::blaze::test_utils::{FakeCompactBlockList, FakeTransaction};
 use crate::compact_formats::compact_tx_streamer_client::CompactTxStreamerClient;
 
-use crate::compact_formats::{CompactOutput, CompactTx, Empty};
+use crate::compact_formats::{CompactSaplingOutput, CompactTx, Empty};
 use crate::lightclient::test_server::{create_test_server, mine_pending_blocks, mine_random_blocks};
+use crate::lightclient::faketx::new_transactiondata;
 use crate::lightclient::LightClient;
 use crate::lightwallet::data::WalletTx;
+use super::lightclient_config::UnitTestNetwork;
 
 use super::checkpoints;
 use super::lightclient_config::LightClientConfig;
@@ -47,7 +53,7 @@ fn new_wallet_from_phrase() {
         .unwrap()
         .to_string();
 
-    let config = LightClientConfig::create_unconnected("main".to_string(), Some(data_dir));
+    let config = LightClientConfig::create_unconnected(UnitTestNetwork, Some(data_dir));
     let lc = LightClient::new_from_phrase(TEST_SEED.to_string(), &config, 0, false).unwrap();
 
     // The first t address and z address should be derived
@@ -77,7 +83,7 @@ fn new_wallet_from_sk() {
         .unwrap()
         .to_string();
 
-    let config = LightClientConfig::create_unconnected("main".to_string(), Some(data_dir));
+    let config = LightClientConfig::create_unconnected(UnitTestNetwork, Some(data_dir));
     let sk = "secret-extended-key-main1qvpa0qr8qqqqpqxn4l054nzxpxzp3a8r2djc7sekdek5upce8mc2j2z0arzps4zv940qeg706hd0wq6g5snzvhp332y6vhwyukdn8dhekmmsk7fzvzkqm6ypc99uy63tpesqwxhpre78v06cx8k5xpp9mrhtgqs5dvp68cqx2yrvthflmm2ynl8c0506dekul0f6jkcdmh0292lpphrksyc5z3pxwws97zd5els3l2mjt2s7hntap27mlmt6w0drtfmz36vz8pgu7ec0twfrq";
     let lc = LightClient::new_from_phrase(sk.to_string(), &config, 0, false).unwrap();
     Runtime::new().unwrap().block_on(async move {
@@ -112,7 +118,7 @@ fn new_wallet_from_vk() {
         .unwrap()
         .to_string();
 
-    let config = LightClientConfig::create_unconnected("main".to_string(), Some(data_dir));
+    let config = LightClientConfig::create_unconnected(UnitTestNetwork, Some(data_dir));
     let vk = "zxviews1qvpa0qr8qqqqpqxn4l054nzxpxzp3a8r2djc7sekdek5upce8mc2j2z0arzps4zv9kdvg28gjzvxd47ant6jn4svln5psw3htx93cq93ahw4e7lptrtlq7he5r6p6rcm3s0z6l24ype84sgqfrmghu449htrjspfv6qg2zfx2yrvthflmm2ynl8c0506dekul0f6jkcdmh0292lpphrksyc5z3pxwws97zd5els3l2mjt2s7hntap27mlmt6w0drtfmz36vz8pgu7ecrxzsls";
     let lc = LightClient::new_from_phrase(vk.to_string(), &config, 0, false).unwrap();
 
@@ -139,7 +145,7 @@ fn new_wallet_from_vk() {
 
 #[tokio::test]
 async fn basic_no_wallet_txns() {
-    let (data, config, ready_rx, stop_tx, h1) = create_test_server().await;
+    let (data, config, ready_rx, stop_tx, h1) = create_test_server(UnitTestNetwork).await;
 
     ready_rx.await.unwrap();
 
@@ -165,7 +171,7 @@ async fn basic_no_wallet_txns() {
 
 #[tokio::test]
 async fn z_incoming_z_outgoing() {
-    let (data, config, ready_rx, stop_tx, h1) = create_test_server().await;
+    let (data, config, ready_rx, stop_tx, h1) = create_test_server(UnitTestNetwork).await;
 
     ready_rx.await.unwrap();
 
@@ -319,7 +325,7 @@ async fn z_incoming_z_outgoing() {
 
 #[tokio::test]
 async fn multiple_incoming_same_tx() {
-    let (data, config, ready_rx, stop_tx, h1) = create_test_server().await;
+    let (data, config, ready_rx, stop_tx, h1) = create_test_server(UnitTestNetwork).await;
 
     ready_rx.await.unwrap();
 
@@ -340,25 +346,30 @@ async fn multiple_incoming_same_tx() {
     assert_eq!(lc.wallet.last_scanned_height().await, 10);
 
     // 2. Construct the Fake tx.
-    let to = extfvk1.default_address().unwrap().1;
+    let to = extfvk1.default_address().1;
 
     // Create fake note for the account
     let mut ctx = CompactTx::default();
-    let mut td = TransactionData::new();
+    let mut td = new_transactiondata();
 
     // Add 4 outputs
     for i in 0..4 {
         let mut rng = OsRng;
         let value = value + i;
+
+        let mut rseed_bytes = [0u8; 32];
+        rng.fill_bytes(&mut rseed_bytes);
+
         let note = Note {
             g_d: to.diversifier().g_d().unwrap(),
             pk_d: to.pk_d().clone(),
             value,
-            rseed: Rseed::BeforeZip212(jubjub::Fr::random(rng)),
+            rseed: Rseed::AfterZip212(rseed_bytes),
         };
 
-        let mut encryptor =
-            SaplingNoteEncryption::new(None, note.clone(), to.clone(), Memo::default().into(), &mut rng);
+        let encryptor =
+            NoteEncryption::<SaplingDomain<zcash_primitives::consensus::Network>>::
+            new(None, note.clone(), to.clone(), Memo::default().into());
 
         let mut rng = OsRng;
         let rcv = jubjub::Fr::random(&mut rng);
@@ -371,9 +382,9 @@ async fn multiple_incoming_same_tx() {
         let od = OutputDescription {
             cv: cv.commitment().into(),
             cmu: note.cmu(),
-            ephemeral_key: ExtendedPoint::from(*encryptor.epk()),
+            ephemeral_key: EphemeralKeyBytes(encryptor.epk().to_bytes()),
             enc_ciphertext: encryptor.encrypt_note_plaintext(),
-            out_ciphertext: encryptor.encrypt_outgoing_plaintext(&cv.commitment().into(), &cmu),
+            out_ciphertext: encryptor.encrypt_outgoing_plaintext(&cv.commitment().into(), &cmu, &mut rng),
             zkproof: [0; GROTH_PROOF_SIZE],
         };
 
@@ -384,21 +395,45 @@ async fn multiple_incoming_same_tx() {
         let enc_ciphertext = encryptor.encrypt_note_plaintext();
 
         // Create a fake CompactBlock containing the note
-        let mut cout = CompactOutput::default();
+        let mut cout = CompactSaplingOutput::default();
         cout.cmu = cmu;
         cout.epk = epk;
         cout.ciphertext = enc_ciphertext[..52].to_vec();
         ctx.outputs.push(cout);
 
-        td.shielded_outputs.push(od);
+        let mut sapling_bundle = if td.sapling_bundle().is_some() {
+            td.sapling_bundle().unwrap().clone()
+        } else {
+            sapling::Bundle {
+                shielded_spends: vec![],
+                shielded_outputs: vec![],
+                value_balance: Amount::zero(),
+                authorization: sapling::Authorized {
+                    binding_sig: Signature::read(&vec![0u8; 64][..]).expect("Signature error"),
+                },
+            }
+        };
+
+        sapling_bundle.shielded_outputs.push(od);
+
+        td = TransactionData::from_parts(
+            td.version(),
+            td.consensus_branch_id(),
+            td.lock_time(),
+            td.expiry_height(),
+            td.transparent_bundle().cloned(),
+            td.sprout_bundle().cloned(),
+            Some(sapling_bundle),
+            td.orchard_bundle().cloned(),
+        );
     }
 
-    td.binding_sig = Signature::read(&vec![0u8; 64][..]).ok();
     let tx = td.freeze().unwrap();
-    ctx.hash = tx.txid().clone().0.to_vec();
+    let txid = tx.txid().to_string();
+    ctx.hash = tx.txid().as_ref().to_vec();
 
     // Add and mine the block
-    fcbl.txns.push((tx.clone(), fcbl.next_height, vec![]));
+    fcbl.txns.push((tx, fcbl.next_height, vec![]));
     fcbl.add_empty_block().add_txs(vec![ctx]);
     mine_pending_blocks(&mut fcbl, &data, &lc).await;
     assert_eq!(lc.wallet.last_scanned_height().await, 11);
@@ -431,7 +466,7 @@ async fn multiple_incoming_same_tx() {
         sorted_txns.sort_by_cached_key(|t| t["amount"].as_u64().unwrap());
 
         for i in 0..4 {
-            assert_eq!(sorted_txns[i]["txid"], tx.txid().to_string());
+            assert_eq!(sorted_txns[i]["txid"], txid);
             assert_eq!(sorted_txns[i]["block_height"].as_u64().unwrap(), 11);
             assert_eq!(
                 sorted_txns[i]["address"],
@@ -480,7 +515,7 @@ async fn multiple_incoming_same_tx() {
 
 #[tokio::test]
 async fn z_incoming_multiz_outgoing() {
-    let (data, config, ready_rx, stop_tx, h1) = create_test_server().await;
+    let (data, config, ready_rx, stop_tx, h1) = create_test_server(UnitTestNetwork).await;
 
     ready_rx.await.unwrap();
 
@@ -542,7 +577,7 @@ async fn z_incoming_multiz_outgoing() {
 #[tokio::test]
 async fn z_to_z_scan_together() {
     // Create an incoming tx, and then send that tx, and scan everything together, to make sure it works.
-    let (data, config, ready_rx, stop_tx, h1) = create_test_server().await;
+    let (data, config, ready_rx, stop_tx, h1) = create_test_server(UnitTestNetwork).await;
 
     ready_rx.await.unwrap();
 
@@ -609,7 +644,7 @@ async fn z_to_z_scan_together() {
 
 #[tokio::test]
 async fn z_incoming_viewkey() {
-    let (data, config, ready_rx, stop_tx, h1) = create_test_server().await;
+    let (data, config, ready_rx, stop_tx, h1) = create_test_server(UnitTestNetwork).await;
 
     ready_rx.await.unwrap();
 
@@ -624,7 +659,7 @@ async fn z_incoming_viewkey() {
     // 2. Create a new Viewkey and import it
     let iextsk = ExtendedSpendingKey::master(&[1u8; 32]);
     let iextfvk = ExtendedFullViewingKey::from(&iextsk);
-    let iaddr = encode_payment_address(config.hrp_sapling_address(), &iextfvk.default_address().unwrap().1);
+    let iaddr = encode_payment_address(config.hrp_sapling_address(), &iextfvk.default_address().1);
     let addrs = lc
         .do_import_vk(
             encode_extended_full_viewing_key(config.hrp_sapling_viewing_key(), &iextfvk),
@@ -705,7 +740,7 @@ async fn z_incoming_viewkey() {
 
 #[tokio::test]
 async fn t_incoming_t_outgoing() {
-    let (data, config, ready_rx, stop_tx, h1) = create_test_server().await;
+    let (data, config, ready_rx, stop_tx, h1) = create_test_server(UnitTestNetwork).await;
 
     ready_rx.await.unwrap();
 
@@ -803,7 +838,7 @@ async fn t_incoming_t_outgoing() {
 
 #[tokio::test]
 async fn mixed_txn() {
-    let (data, config, ready_rx, stop_tx, h1) = create_test_server().await;
+    let (data, config, ready_rx, stop_tx, h1) = create_test_server(UnitTestNetwork).await;
 
     ready_rx.await.unwrap();
 
@@ -911,7 +946,7 @@ async fn mixed_txn() {
 
 #[tokio::test]
 async fn aborted_resync() {
-    let (data, config, ready_rx, stop_tx, h1) = create_test_server().await;
+    let (data, config, ready_rx, stop_tx, h1) = create_test_server(UnitTestNetwork).await;
 
     ready_rx.await.unwrap();
 
@@ -1027,7 +1062,7 @@ async fn aborted_resync() {
 
 #[tokio::test]
 async fn no_change() {
-    let (data, config, ready_rx, stop_tx, h1) = create_test_server().await;
+    let (data, config, ready_rx, stop_tx, h1) = create_test_server(UnitTestNetwork).await;
 
     ready_rx.await.unwrap();
 
@@ -1089,7 +1124,7 @@ async fn no_change() {
 #[tokio::test]
 async fn recover_at_checkpoint() {
     // 1. Wait for test server to start
-    let (data, config, ready_rx, stop_tx, h1) = create_test_server().await;
+    let (data, config, ready_rx, stop_tx, h1) = create_test_server(UnitTestNetwork).await;
     ready_rx.await.unwrap();
 
     // Get checkpoint at 1220000
@@ -1134,6 +1169,8 @@ async fn recover_at_checkpoint() {
     );
 
     // 5: Test2: Create a new lightwallet, restoring at checkpoint + 100
+    // First remove the old wallet
+    fs::remove_file(Path::new(config.data_dir.as_ref().unwrap()).join("zecwallet-light-wallet.dat")).unwrap();
     let lc = LightClient::test_new(&config, Some(TEST_SEED.to_string()), ckpt_height + 100)
         .await
         .unwrap();
@@ -1174,7 +1211,7 @@ async fn recover_at_checkpoint() {
 
 #[tokio::test]
 async fn witness_clearing() {
-    let (data, config, ready_rx, stop_tx, h1) = create_test_server().await;
+    let (data, config, ready_rx, stop_tx, h1) = create_test_server(UnitTestNetwork).await;
 
     ready_rx.await.unwrap();
 
@@ -1285,7 +1322,7 @@ async fn witness_clearing() {
 
 #[tokio::test]
 async fn mempool_clearing() {
-    let (data, config, ready_rx, stop_tx, h1) = create_test_server().await;
+    let (data, config, ready_rx, stop_tx, h1) = create_test_server(UnitTestNetwork).await;
 
     ready_rx.await.unwrap();
 
@@ -1331,7 +1368,11 @@ async fn mempool_clearing() {
     let notes_before = lc.do_list_notes(true).await;
     let txns_before = lc.do_list_transactions(false).await;
 
-    let tx = Transaction::read(&sent_tx.data[..]).unwrap();
+    let tx = Transaction::read(
+        &sent_tx.data[..],
+        BranchId::for_height(&TEST_NETWORK, BlockHeight::from_u32(sent_tx.height as u32)),
+    )
+        .unwrap();
     FetchFullTxns::scan_full_tx(
         config,
         tx,
@@ -1384,7 +1425,7 @@ async fn mempool_clearing() {
 
 #[tokio::test]
 async fn mempool_and_balance() {
-    let (data, config, ready_rx, stop_tx, h1) = create_test_server().await;
+    let (data, config, ready_rx, stop_tx, h1) = create_test_server(UnitTestNetwork).await;
 
     ready_rx.await.unwrap();
 

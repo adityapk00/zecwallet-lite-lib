@@ -16,19 +16,13 @@ use http::Uri;
 use std::{sync::Arc, time::Duration};
 use tokio::{
     sync::{
-        mpsc::{self, UnboundedSender},
+        mpsc::{self, Sender, UnboundedSender},
         RwLock,
     },
     task::{yield_now, JoinHandle},
     time::sleep,
 };
-use zcash_primitives::{
-    consensus::BlockHeight,
-    merkle_tree::{CommitmentTree, IncrementalWitness},
-    primitives::Nullifier,
-    sapling::Node,
-    transaction::TxId,
-};
+use zcash_primitives::{consensus, consensus::BlockHeight, merkle_tree::{CommitmentTree, IncrementalWitness}, sapling::Node, sapling::Nullifier, transaction::TxId};
 
 use super::{fixed_size_buffer::FixedSizeBuffer, sync_status::SyncStatus};
 
@@ -56,7 +50,7 @@ pub struct BlockAndWitnessData {
 }
 
 impl BlockAndWitnessData {
-    pub fn new(config: &LightClientConfig, sync_status: Arc<RwLock<SyncStatus>>) -> Self {
+    pub fn new<P: consensus::Parameters>(config: &LightClientConfig<P>, sync_status: Arc<RwLock<SyncStatus>>) -> Self {
         Self {
             blocks: Arc::new(RwLock::new(vec![])),
             existing_blocks: Arc::new(RwLock::new(vec![])),
@@ -69,7 +63,7 @@ impl BlockAndWitnessData {
     }
 
     #[cfg(test)]
-    pub fn new_with_batchsize(config: &LightClientConfig, batch_size: u64) -> Self {
+    pub fn new_with_batchsize<P: consensus::Parameters>(config: &LightClientConfig<P>, batch_size: u64) -> Self {
         let mut s = Self::new(config, Arc::new(RwLock::new(SyncStatus::default())));
         s.batch_size = batch_size;
 
@@ -279,12 +273,12 @@ impl BlockAndWitnessData {
         end_block: u64,
         wallet_txns: Arc<RwLock<WalletTxns>>,
         reorg_tx: UnboundedSender<Option<u64>>,
-    ) -> (JoinHandle<Result<u64, String>>, UnboundedSender<CompactBlock>) {
+    ) -> (JoinHandle<Result<u64, String>>, Sender<CompactBlock>) {
         //info!("Starting node and witness sync");
         let batch_size = self.batch_size;
 
         // Create a new channel where we'll receive the blocks
-        let (tx, mut rx) = mpsc::unbounded_channel::<CompactBlock>();
+        let (tx, mut rx) = mpsc::channel::<CompactBlock>(64); // Only 64 blocks in the buffer
 
         let blocks = self.blocks.clone();
         let existing_blocks = self.existing_blocks.clone();
@@ -307,8 +301,10 @@ impl BlockAndWitnessData {
             let mut last_block_expecting = end_block;
 
             while let Some(cb) = rx.recv().await {
-                // We'll process 25_000 blocks at a time.
+                // We'll process batch_size (1_000) blocks at a time.
+                // println!("Recieved block # {}", cb.height);
                 if cb.height % batch_size == 0 {
+                    // println!("Batch size hit at height {} with len {}", cb.height, blks.len());
                     if !blks.is_empty() {
                         // Add these blocks to the list
                         sync_status.write().await.blocks_done += blks.len() as u64;
@@ -336,7 +332,12 @@ impl BlockAndWitnessData {
 
                     // If there was a reorg, then we need to invalidate the block and its associated txns
                     if let Some(reorg_height) = reorg_block {
-                        Self::invalidate_block(reorg_height, existing_blocks.clone(), wallet_txns.clone()).await;
+                        Self::invalidate_block(
+                            reorg_height,
+                            existing_blocks.clone(),
+                            wallet_txns.clone(),
+                        )
+                            .await;
                         last_block_expecting = reorg_height;
                     }
                     reorg_tx.send(reorg_block).unwrap();
@@ -588,6 +589,7 @@ mod test {
     use std::sync::Arc;
 
     use crate::blaze::sync_status::SyncStatus;
+    use crate::lightclient::lightclient_config::UnitTestNetwork;
     use crate::lightwallet::wallet_txns::WalletTxns;
     use crate::{
         blaze::test_utils::{FakeCompactBlock, FakeCompactBlockList},
@@ -606,7 +608,7 @@ mod test {
     #[tokio::test]
     async fn setup_finish_simple() {
         let mut nw = BlockAndWitnessData::new_with_batchsize(
-            &LightClientConfig::create_unconnected("main".to_string(), None),
+            &LightClientConfig::create_unconnected(UnitTestNetwork, None),
             25_000,
         );
 
@@ -623,7 +625,7 @@ mod test {
     #[tokio::test]
     async fn setup_finish_large() {
         let mut nw = BlockAndWitnessData::new_with_batchsize(
-            &LightClientConfig::create_unconnected("main".to_string(), None),
+            &LightClientConfig::create_unconnected(UnitTestNetwork, None),
             25_000,
         );
 
@@ -641,7 +643,7 @@ mod test {
 
     #[tokio::test]
     async fn from_sapling_genesis() {
-        let mut config = LightClientConfig::create_unconnected("main".to_string(), None);
+        let mut config = LightClientConfig::create_unconnected(UnitTestNetwork, None);
         config.sapling_activation_height = 1;
 
         let blocks = FakeCompactBlockList::new(200).into_blockdatas();
@@ -671,6 +673,7 @@ mod test {
             for block in blocks {
                 cb_sender
                     .send(block.cb())
+                    .await
                     .map_err(|e| format!("Couldn't send block: {}", e))?;
             }
             if let Some(Some(_h)) = reorg_rx.recv().await {
@@ -691,7 +694,7 @@ mod test {
 
     #[tokio::test]
     async fn with_existing_batched() {
-        let mut config = LightClientConfig::create_unconnected("main".to_string(), None);
+        let mut config = LightClientConfig::create_unconnected(UnitTestNetwork, None);
         config.sapling_activation_height = 1;
 
         let mut blocks = FakeCompactBlockList::new(200).into_blockdatas();
@@ -723,6 +726,7 @@ mod test {
             for block in blocks {
                 cb_sender
                     .send(block.cb())
+                    .await
                     .map_err(|e| format!("Couldn't send block: {}", e))?;
             }
             if let Some(Some(_h)) = reorg_rx.recv().await {
@@ -748,7 +752,7 @@ mod test {
 
     #[tokio::test]
     async fn with_reorg() {
-        let mut config = LightClientConfig::create_unconnected("main".to_string(), None);
+        let mut config = LightClientConfig::create_unconnected(UnitTestNetwork, None);
         config.sapling_activation_height = 1;
 
         let mut blocks = FakeCompactBlockList::new(100).into_blockdatas();
@@ -821,6 +825,7 @@ mod test {
             for block in blocks {
                 cb_sender
                     .send(block.cb())
+                    .await
                     .map_err(|e| format!("Couldn't send block: {}", e))?;
             }
 
@@ -836,6 +841,7 @@ mod test {
 
                 cb_sender
                     .send(reorged_blocks.drain(0..1).next().unwrap().cb())
+                    .await
                     .map_err(|e| format!("Couldn't send block: {}", e))?;
             }
 

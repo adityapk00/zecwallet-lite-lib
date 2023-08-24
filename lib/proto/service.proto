@@ -11,8 +11,8 @@ import "compact_formats.proto";
 // A BlockID message contains identifiers to select a block: a height or a
 // hash. Specification by hash is not implemented, but may be in the future.
 message BlockID {
-     uint64 height = 1;
-     bytes hash = 2;
+    uint64 height = 1;
+    bytes hash = 2;
 }
 
 // BlockRange specifies a series of blocks from start to end inclusive.
@@ -20,19 +20,21 @@ message BlockID {
 message BlockRange {
     BlockID start = 1;
     BlockID end = 2;
+    uint64 spamFilterThreshold = 3;
 }
 
 // A TxFilter contains the information needed to identify a particular
 // transaction: either a block and an index, or a direct transaction hash.
 // Currently, only specification by hash is supported.
 message TxFilter {
-     BlockID block = 1;     // block identifier, height or hash
-     uint64 index = 2;      // index within the block
-     bytes hash = 3;        // transaction ID (hash, txid)
+    BlockID block = 1;     // block identifier, height or hash
+    uint64 index = 2;      // index within the block
+    bytes hash = 3;        // transaction ID (hash, txid)
 }
 
-// RawTransaction contains the complete transaction data. It also optionally includes 
-// the block height in which the transaction was included.
+// RawTransaction contains the complete transaction data. It also optionally includes
+// the block height in which the transaction was included, or, when returned
+// by GetMempoolStream(), the latest block height.
 message RawTransaction {
     bytes data = 1;     // exact data returned by Zcash 'getrawtransaction'
     uint64 height = 2;  // height that the transaction was mined (or -1)
@@ -109,11 +111,12 @@ message Exclude {
 
 // The TreeState is derived from the Zcash z_gettreestate rpc.
 message TreeState {
-    string network = 1; // "main" or "test"
-    uint64 height = 2;
-    string hash = 3;    // block id
-    uint32 time = 4;    // Unix epoch time when the block was mined
-    string tree = 5;    // sapling commitment tree state
+    string network = 1;     // "main" or "test"
+    uint64 height = 2;      // block height
+    string hash = 3;        // block id
+    uint32 time = 4;        // Unix epoch time when the block was mined
+    string tree = 5; // sapling commitment tree state
+    string orchardTree = 6; // orchard commitment tree state
 }
 
 // Results are sorted by height, which makes it easy to issue another
@@ -146,11 +149,11 @@ message PriceRequest {
 
 message PriceResponse {
     // Timestamp at which this price quote was fetched. Note, this may not be the same
-    // as the request timestamp, but the server will respond with the closest timestamp that it has/can fetch    
-    int64 timestamp = 1;  
-    
+    // as the request timestamp, but the server will respond with the closest timestamp that it has/can fetch
+    int64 timestamp = 1;
+
     // 3-letter currency code, matching the request
-    string currency = 2;  
+    string currency = 2;
 
     // price of ZEC
     double price = 3;
@@ -163,8 +166,8 @@ service CompactTxStreamer {
     rpc GetBlock(BlockID) returns (CompactBlock) {}
     // Return a list of consecutive compact blocks
     rpc GetBlockRange(BlockRange) returns (stream CompactBlock) {}
-    
-    // Get the historical and current prices 
+
+    // Get the historical and current prices
     rpc GetZECPrice(PriceRequest) returns (PriceResponse) {}
     rpc GetCurrentZECPrice(Empty) returns (PriceResponse) {}
 
@@ -193,6 +196,8 @@ service CompactTxStreamer {
     // in the exclude list that don't exist in the mempool are ignored.
     rpc GetMempoolTx(Exclude) returns (stream CompactTx) {}
 
+    // Return a stream of current Mempool transactions. This will keep the output stream open while
+    // there are mempool transactions. It will close the returned stream when a new block is mined.
     rpc GetMempoolStream(Empty) returns (stream RawTransaction) {}
 
     // GetTreeState returns the note commitment tree state corresponding to the given block.
